@@ -216,3 +216,15 @@ input[type=month] { text-align: right; }
 .sheet-moves .section-h, .sheet-moves .group { margin-left: 16px; margin-right: 16px; }
 .footer-note.center { text-align: center; }
 .ccard .avail.two { font-size: 20px; }
+
+/* v6.1: conexión simple */
+.card.steps b { font-size: 17px; }
+.card.steps ol { margin: 10px 0 14px; padding-left: 20px; color: var(--label2); font-size: 14px; line-height: 1.4; }
+.card.steps ol li { margin-bottom: 6px; } .card.steps ol b { font-size: inherit; color: var(--label); }
+.card.steps .btn { margin-bottom: 10px; }
+.card.steps .link { display: block; width: 100%; text-align: center; font-size: 15px; padding: 4px 0; }
+details.adv { margin-bottom: 22px; }
+details.adv summary { color: var(--blue); font-size: 15px; padding: 4px 16px 12px; cursor: pointer; list-style: none; }
+details.adv summary::-webkit-details-marker { display: none; }
+details.adv summary::after { content: " ›"; }
+details.adv[open] summary::after { content: " ⌄"; }

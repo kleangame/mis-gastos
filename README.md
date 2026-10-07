@@ -21,7 +21,14 @@ cada gasto se guarda como una fila en tu propia Google Sheet.
 - Ajustes: conexión a Google Sheets, moneda, cotización del dólar, exportar CSV y número de versión.
 - Offline: los cambios quedan en cola y se suben solos al volver la conexión.
 
-## 1. Crear la hoja y el backend (5 minutos)
+## Conexión simple (recomendada)
+1. En la app: Ajustes → **Crear mi hoja** → «Hacer una copia». La copia ya trae el script y las hojas.
+2. En la copia: Extensiones → Apps Script → **Implementar → Nueva implementación → Implementar** y aceptá los permisos
+   (si Google dice «no verificada», Configuración avanzada → Ir a Mis Gastos: es tu propio script).
+3. En la hoja: menú **Mis Gastos → Conectar celular**. Escaneá el QR o abrí el link; en iPhone con la app instalada, copiá el código y pegalo en Ajustes.
+La clave se genera sola. `appsscript.json` deja la implementación preconfigurada (ejecutar como yo, acceso cualquier persona).
+
+## Conexión avanzada: 1. Crear la hoja y el backend (5 minutos)
 1. Creá una Google Sheet nueva (por ejemplo "Mis Gastos").
 2. Menú **Extensiones > Apps Script**. Borrá lo que haya y pegá `Code.gs`.
 3. Cambiá `TOKEN = 'CAMBIA-ESTA-CLAVE'` por una clave tuya. Guardá.

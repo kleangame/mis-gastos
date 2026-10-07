@@ -1,8 +1,65 @@
 /**
  * Mis Gastos — backend en Google Sheets.
- * Pegá este código en Extensiones > Apps Script de tu hoja y publicalo como App web.
+ * Modo simple: copiá la hoja plantilla, implementá como App web y usá el menú Mis Gastos → Conectar celular.
+ * Modo avanzado: pegá este código en Extensiones > Apps Script, cambiá TOKEN y publicalo como App web.
  */
-const TOKEN = 'CAMBIA-ESTA-CLAVE';   // Elegí una clave secreta y usá la misma en la app.
+const TOKEN = 'CAMBIA-ESTA-CLAVE';   // Opcional. Si lo dejás así, la clave se genera sola.
+const APP_URL = 'https://kleangame.github.io/mis-gastos/';
+
+// Clave: la que pusiste en TOKEN o, si no la cambiaste, una aleatoria guardada en el script.
+function getToken() {
+  if (TOKEN && TOKEN !== 'CAMBIA-ESTA-CLAVE') return TOKEN;
+  const props = PropertiesService.getScriptProperties();
+  let t = props.getProperty('TOKEN');
+  if (!t) { t = Utilities.getUuid().replace(/-/g, ''); props.setProperty('TOKEN', t); }
+  return t;
+}
+
+// ---- menú en la hoja ----
+function onOpen() {
+  SpreadsheetApp.getUi().createMenu('Mis Gastos')
+    .addItem('📱 Conectar celular', 'showConnect')
+    .addItem('❓ Cómo implementar', 'showHelp')
+    .addToUi();
+}
+function setupSheets() {
+  sheet(SHEET_GASTOS, H_GASTOS); sheet(SHEET_PRESUPUESTOS, H_PRESUPUESTOS); sheet(SHEET_TARJETAS, H_TARJETAS);
+  sheet(SHEET_FIJOS, H_FIJOS); sheet(SHEET_CUENTAS, H_CUENTAS); sheet(SHEET_TRANSF, H_TRANSF);
+}
+function showConnect() {
+  const url = ScriptApp.getService().getUrl();
+  if (!url) return showHelp();
+  setupSheets();
+  const link = APP_URL + '#connect=' + encodeURIComponent(url) + '&k=' + encodeURIComponent(getToken());
+  const code = Utilities.base64EncodeWebSafe(url + '|' + getToken());
+  const html = HtmlService.createHtmlOutput(`
+    <style>body{font-family:Arial,sans-serif;text-align:center;color:#222}a.btn{display:inline-block;background:#007AFF;color:#fff;padding:10px 18px;border-radius:10px;text-decoration:none;font-weight:bold}
+    #qr{display:flex;justify-content:center;margin:14px 0}textarea{width:100%;height:58px;font-size:11px}small{color:#666}</style>
+    <p>Escaneá este código con la cámara del celular para conectar la app:</p>
+    <div id="qr"></div>
+    <p><a class="btn" href="${link}" target="_blank">Abrir Mis Gastos conectada</a></p>
+    <p><small>¿Usás la app instalada en iPhone? Copiá este código y pegalo en Ajustes → Pegar código:</small></p>
+    <textarea readonly onclick="this.select()">${code}</textarea>
+    <p><small>No compartas este código: da acceso a tu hoja.</small></p>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+    <script>new QRCode(document.getElementById('qr'), { text: ${JSON.stringify(link)}, width: 200, height: 200 });</script>
+  `).setWidth(360).setHeight(470);
+  SpreadsheetApp.getUi().showModalDialog(html, 'Conectar celular');
+}
+function showHelp() {
+  const html = HtmlService.createHtmlOutput(`
+    <style>body{font-family:Arial,sans-serif;color:#222;font-size:14px;line-height:1.45}li{margin-bottom:8px}b{color:#000}</style>
+    <p>Falta un solo paso: publicar el script (se hace una vez).</p>
+    <ol>
+      <li>Menú <b>Extensiones → Apps Script</b>.</li>
+      <li>Arriba a la derecha: <b>Implementar → Nueva implementación</b>.</li>
+      <li>En el engranaje elegí <b>Aplicación web</b>. Ejecutar como: <b>Yo</b>. Quién tiene acceso: <b>Cualquier persona</b>. Tocá <b>Implementar</b>.</li>
+      <li>Google pide permisos: elegí tu cuenta. Si dice <i>«Google no verificó esta app»</i>, tocá <b>Configuración avanzada → Ir a Mis Gastos</b>. Es tu propio script, solo accede a esta hoja.</li>
+      <li>Volvé a la hoja y usá <b>Mis Gastos → Conectar celular</b>.</li>
+    </ol>
+  `).setWidth(380).setHeight(400);
+  SpreadsheetApp.getUi().showModalDialog(html, 'Cómo implementar');
+}
 
 const SHEET_GASTOS = 'Gastos';
 const SHEET_PRESUPUESTOS = 'Presupuestos';
@@ -29,7 +86,7 @@ function doGet() {
 function doPost(e) {
   let req;
   try { req = JSON.parse(e.postData.contents); } catch (err) { return json({ ok: false, error: 'JSON inválido' }); }
-  if (req.token !== TOKEN) return json({ ok: false, error: 'Clave incorrecta' });
+  if (req.token !== getToken()) return json({ ok: false, error: 'Clave incorrecta' });
 
   const lock = LockService.getScriptLock();
   lock.waitLock(20000);

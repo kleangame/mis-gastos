@@ -27,7 +27,9 @@ const CARD_COLORS = [
 const CURRENCIES = ['UYU', 'USD', 'ARS', 'EUR', 'BRL', 'CLP', 'MXN', 'COP', 'PEN'];
 const MONTHS = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
 const CASH = 'cash';           // id de la cuenta Efectivo (también usado por datos de versiones anteriores)
-const APP_VERSION = '6.0.0';
+const APP_VERSION = '6.1.0';
+// Hoja plantilla con el script ya incluido (modo simple). /copy abre «Hacer una copia» en Google Sheets.
+const TEMPLATE_URL = '';
 const ACC_TYPES = {
   cash:    { label: 'Efectivo',  emoji: '💵', color: '#34C759' },
   bank:    { label: 'Banco',     emoji: '🏦', color: '#007AFF' },
@@ -568,14 +570,29 @@ function renderSettings() {
     <div class="group">
       <div class="row"><span>Estado</span><span class="val"><i class="status-dot ${st[0]}"></i>${esc(st[1])}</span></div>
       ${S.queue.length ? `<div class="row"><span>Cambios pendientes</span><span class="val">${S.queue.length}</span></div>` : ''}
-      <label class="row"><span>URL del script</span><input id="cfg-url" type="url" placeholder="https://script.google.com/…" value="${esc(S.cfg.url)}" ${connected() ? 'readonly' : ''}></label>
-      <label class="row"><span>Clave</span><input id="cfg-token" type="password" placeholder="Tu clave secreta" value="${esc(S.cfg.token)}" ${connected() ? 'readonly' : ''}></label>
     </div>
     ${connected()
       ? `<button class="btn" data-action="sync-now" ${S.syncing ? 'disabled' : ''}>Sincronizar ahora</button>
          <div class="group"><button class="row danger center" data-action="disconnect">Desconectar hoja</button></div>`
-      : `<button class="btn" data-action="connect">Conectar hoja</button>
-         <p class="footer-note">Cada movimiento se guarda como una fila en tu Google Sheet. Las instrucciones están en LEEME.md.</p>`}
+      : `<div class="card steps">
+          <b>Guardá tus datos en tu Google Sheet</b>
+          <ol>
+            <li>Tocá <b>Crear mi hoja</b> y después «Hacer una copia».</li>
+            <li>En la copia: Extensiones → Apps Script → <b>Implementar</b> → Nueva implementación → Implementar, y aceptá los permisos.</li>
+            <li>En la hoja, menú <b>Mis Gastos → Conectar celular</b>, y escaneá el QR.</li>
+          </ol>
+          <button class="btn" data-action="create-sheet">Crear mi hoja</button>
+          <button class="link" data-action="paste-code">¿Te dio un código? Pegalo acá</button>
+        </div>
+        <details class="adv">
+          <summary>Configuración avanzada</summary>
+          <div class="group">
+            <label class="row"><span>URL del script</span><input id="cfg-url" type="url" placeholder="https://script.google.com/…" value="${esc(S.cfg.url)}"></label>
+            <label class="row"><span>Clave</span><input id="cfg-token" type="password" placeholder="Tu clave secreta" value="${esc(S.cfg.token)}"></label>
+          </div>
+          <button class="btn" data-action="connect">Conectar hoja</button>
+          <p class="footer-note">Para quien ya tiene el script pegado en su propia hoja. Las instrucciones están en el README.</p>
+        </details>`}
     <div class="section-h"><span>General</span></div>
     <div class="group">
       <label class="row"><span>Moneda</span>
@@ -587,6 +604,8 @@ function renderSettings() {
     ${usdMode() ? `<p class="footer-note">Podés cargar movimientos en dólares. Se convierten a ${esc(S.cfg.currency)} con la cotización del día en que los cargás; los fijos en dólares usan la cotización actual.</p>` : ''}
     <div class="section-h"><span>Datos</span></div>
     <div class="group">
+      <button class="row blue" data-action="backup">Guardar copia de seguridad<span></span></button>
+      <button class="row blue" data-action="restore">Restaurar copia de seguridad<span></span></button>
       <button class="row blue" data-action="export">Exportar CSV<span></span></button>
       <button class="row danger" data-action="wipe">Borrar datos de este dispositivo</button>
     </div>
@@ -703,12 +722,53 @@ async function sync(manual = false) {
   }
   if (S.queue.length && !S.syncError) sync();
 }
-async function connect() {
-  const url = $('cfg-url').value.trim(), token = $('cfg-token').value.trim();
-  if (!/^https:\/\/script\.google(usercontent)?\.com\//.test(url)) return toast('Pegá la URL de la app web de Apps Script');
-  if (!token) return toast('Ingresá la clave que pusiste en el script');
-  S.cfg.url = url; S.cfg.token = token;
-  // Sube lo que ya había en el teléfono (el servidor evita duplicados por id).
+async function connect() { return connectWith($('cfg-url').value.trim(), $('cfg-token').value.trim()); }
+// Código de conexión que muestra la hoja: base64 (web-safe) de "url|clave".
+function decodeCode(code) {
+  try {
+    const b = code.trim().replace(/-/g, '+').replace(/_/g, '/');
+    const [url, token] = atob(b + '==='.slice((b.length + 3) % 4)).split('|');
+    return url && token ? { url, token } : null;
+  } catch (e) { return null; }
+}
+async function connectFromHash() {
+  const m = location.hash.match(/^#connect=([^&]+)&k=(.+)$/);
+  if (!m) return;
+  history.replaceState(null, '', location.pathname + location.search);
+  show('settings');
+  await connectWith(decodeURIComponent(m[1]), decodeURIComponent(m[2]));
+  if (connected()) toast('¡Listo! Tu app quedó conectada a tu hoja');
+}
+// Copia de seguridad: un archivo JSON con todo lo guardado en este dispositivo.
+function backup() {
+  const data = { app: 'mis-gastos', version: APP_VERSION, date: new Date().toISOString(),
+    expenses: S.expenses, budgets: S.budgets, cards: S.cards, recurring: S.recurring, accounts: S.accounts, transfers: S.transfers,
+    cfg: { currency: S.cfg.currency, usdRate: S.cfg.usdRate } };
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([JSON.stringify(data, null, 1)], { type: 'application/json' }));
+  a.download = `mis-gastos-${isoDate(new Date())}.json`; a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  toast('Copia guardada');
+}
+function restore() {
+  const inp = document.createElement('input');
+  inp.type = 'file'; inp.accept = '.json,application/json';
+  inp.onchange = async () => {
+    try {
+      const d = JSON.parse(await inp.files[0].text());
+      if (d.app !== 'mis-gastos' || !Array.isArray(d.expenses)) throw new Error('formato');
+      if (!confirm(`¿Reemplazar los datos de este dispositivo por la copia del ${new Date(d.date).toLocaleDateString('es-UY')}?`)) return;
+      S.expenses = d.expenses; S.budgets = d.budgets || {}; S.cards = d.cards || []; S.recurring = d.recurring || [];
+      S.accounts = d.accounts || null; S.transfers = d.transfers || [];
+      if (d.cfg?.currency) { S.cfg.currency = d.cfg.currency; S.cfg.usdRate = d.cfg.usdRate || S.cfg.usdRate; }
+      ensureCash(); S.cfg.setupPending = false; persist(); setMoney(); render();
+      if (connected()) { queueAll(); persist(); sync(true); }
+      toast('Copia restaurada');
+    } catch (e) { toast('Ese archivo no es una copia de Mis Gastos'); }
+  };
+  inp.click();
+}
+function queueAll() {
   S.queue = [
     ...S.cards.map((c) => ({ type: 'card', card: c })),
     ...S.accounts.map((a) => ({ type: 'account', account: a })),
@@ -717,6 +777,13 @@ async function connect() {
     ...S.expenses.map((e) => ({ type: 'upsert', expense: e })),
     ...Object.entries(S.budgets).map(([category, amount]) => ({ type: 'budget', category, amount })),
   ];
+}
+async function connectWith(url, token) {
+  if (!/^https:\/\/script\.google(usercontent)?\.com\//.test(url)) return toast('Pegá la URL de la app web de Apps Script');
+  if (!token) return toast('Ingresá la clave que pusiste en el script');
+  S.cfg.url = url; S.cfg.token = token;
+  // Sube lo que ya había en el teléfono (el servidor evita duplicados por id).
+  queueAll();
   persist();
   await sync(true);
   if (S.syncError) { S.cfg.url = ''; S.cfg.token = ''; S.queue = []; persist(); render(); }
@@ -1160,6 +1227,19 @@ document.addEventListener('click', (ev) => {
       }
     },
     'export': exportCSV,
+    'backup': backup,
+    'restore': restore,
+    'create-sheet': () => {
+      if (!TEMPLATE_URL) return toast('La plantilla todavía no está disponible. Usá la configuración avanzada.');
+      window.open(TEMPLATE_URL, '_blank');
+    },
+    'paste-code': () => {
+      const code = prompt('Pegá el código que te mostró la hoja (Mis Gastos → Conectar celular):');
+      if (!code) return;
+      const c = decodeCode(code);
+      if (!c) return toast('Ese código no es válido');
+      connectWith(c.url, c.token).then(() => { if (connected()) toast('¡Listo! Tu app quedó conectada a tu hoja'); });
+    },
     'wipe': () => {
       if (confirm('¿Borrar todos los datos de este dispositivo?')) {
         S.expenses = []; S.budgets = {}; S.cards = []; S.recurring = []; S.transfers = []; S.accounts = null; S.queue = [];
@@ -1217,5 +1297,7 @@ ensureCash();
 
 setMoney();
 show('home');
+connectFromHash();
+window.addEventListener('hashchange', connectFromHash);
 sync();
 if (rateStale()) fetchRate();
