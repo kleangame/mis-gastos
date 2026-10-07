@@ -303,3 +303,14 @@ details.adv[open] summary::after { content: " ⌄"; }
 .from-lbl small { font-size: 12px; color: var(--label2); white-space: nowrap; }
 
 .from-sel.attn { outline: 2px solid var(--orange, #ff9500); border-radius: 8px; transition: outline .3s; }
+
+/* v8.7: selección clara de Gasto/Ingreso y moneda, también en modo oscuro */
+.segmented button { color: var(--label2); transition: background .15s, color .15s; }
+.segmented button.on { background: var(--blue); color: #fff; box-shadow: 0 2px 8px rgba(0,0,0,.25); }
+#f-type button[data-type="expense"].on { background: var(--red); }
+#f-type button[data-type="income"].on { background: var(--green); }
+#sheet[data-type="expense"] #f-amount { color: var(--red); }
+#sheet[data-type="income"] #f-amount { color: var(--green); }
+#sheet[data-cur="usd"] #cur-symbol { color: var(--green); }
+.amt.deferred { display: flex; flex-direction: column; align-items: flex-end; color: var(--label3); font-weight: 500; }
+.amt.deferred small { font-size: 12px; color: var(--orange); font-weight: 500; }

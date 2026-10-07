@@ -28,7 +28,7 @@ const CARD_COLORS = [
 const CURRENCIES = ['UYU', 'USD', 'ARS', 'EUR', 'BRL', 'CLP', 'MXN', 'COP', 'PEN'];
 const MONTHS = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
 const CASH = 'cash';           // id de la cuenta Efectivo (también usado por datos de versiones anteriores)
-const APP_VERSION = '8.6.2';
+const APP_VERSION = '8.7.0';
 const ACC_TYPES = {
   cash:    { label: 'Efectivo',  emoji: '💵', color: '#34C759' },
   bank:    { label: 'Banco',     emoji: '🏦', color: '#007AFF' },
@@ -280,6 +280,11 @@ function entriesForMonth(key) {
   return out;
 }
 const monthEntries = (off) => entriesForMonth(nowKey() + off);
+// Compras con tarjeta hechas este mes que se pagan en un mes siguiente (después del cierre): solo se muestran, no suman.
+function deferredForMonth(key) {
+  return S.expenses.filter((e) => !e.opening && !isIncome(e) && isCardM(e.method) && monthKey(parseLocal(e.date)) === key && firstInstallmentKey(e) > key)
+    .map((e) => ({ ...e, src: e, k: 0, n: nInst(e), value: 0, deferred: firstInstallmentKey(e) }));
+}
 const sumV = (arr) => arr.reduce((s, e) => s + e.value, 0);
 const expensesOf = (arr) => arr.filter((e) => !isIncome(e));
 const incomesOf = (arr) => arr.filter(isIncome);
@@ -408,7 +413,8 @@ function entryRow(x) {
   return `<button class="row with-icon" data-action="edit-expense" data-id="${esc(x.id)}">
     ${icon(c)}
     <span class="ri"><b>${esc(x.note || x.category)}</b><small>${esc(sub)}</small></span>
-    <span class="amt ${inc ? 'income' : ''}">${inc ? '+' : '-'}${fmt(x.value)}</span>
+    ${x.deferred ? `<span class="amt deferred">${fmt(baseAmount(x))}<small>se paga en ${MONTHS[x.deferred % 12]}</small></span>`
+      : `<span class="amt ${inc ? 'income' : ''}">${inc ? '+' : '-'}${fmt(x.value)}</span>`}
   </button>`;
 }
 function donutSVG(rows, total) {
@@ -667,7 +673,7 @@ function renderHome() {
 function renderList() {
   const q = S.query.trim().toLowerCase();
   const filters = ['Todas', 'Ingresos', 'Fijos', 'Tarjeta', 'Transferencias', ...expCats().map((c) => c.name)];
-  const items = monthEntries(S.offset)
+  const items = monthEntries(S.offset).concat(deferredForMonth(nowKey() + S.offset))
     .filter((e) => S.catFilter === 'Todas'
       || (S.catFilter === 'Ingresos' && isIncome(e))
       || (S.catFilter === 'Fijos' && e.fixed)
@@ -1320,6 +1326,7 @@ function openExpense(id = null, fixed = false) {
 function applyType() {
   const inc = S.selType === 'income';
   document.querySelectorAll('#f-type button').forEach((b) => b.classList.toggle('on', b.dataset.type === S.selType));
+  $('sheet').dataset.type = S.selType;
   $('sheet-title').textContent = (S.editingId ? 'Editar ' : 'Nuevo ') + (inc ? 'ingreso' : 'gasto');
   const cats = catsFor(S.selType);
   if (!cats.some((c) => c.name === S.selCat)) S.selCat = cats[0].name;
@@ -1332,7 +1339,8 @@ function updateCur() {
   $('f-cur').hidden = !usdMode();
   document.querySelectorAll('#f-cur button').forEach((b) => b.classList.toggle('on', (b.dataset.cur === USD) === usd));
   $('f-cur-local').textContent = S.cfg.currency;
-  $('cur-symbol').textContent = usd ? 'US$' : (money.formatToParts(0).find((p) => p.type === 'currency')?.value || '$');
+  $('cur-symbol').textContent = usd ? 'US$' : S.cfg.currency === 'UYU' ? '$' : (money.formatToParts(0).find((p) => p.type === 'currency')?.value || '$');
+  $('sheet').dataset.cur = usd ? 'usd' : 'local';
   $('f-rate-group').hidden = !usd || fixed;
   const amount = parseAmount($('f-amount').value);
   const rate = fixed ? Number(S.cfg.usdRate) : parseAmount($('f-rate').value);
