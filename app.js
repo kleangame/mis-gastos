@@ -28,7 +28,7 @@ const CARD_COLORS = [
 const CURRENCIES = ['UYU', 'USD', 'ARS', 'EUR', 'BRL', 'CLP', 'MXN', 'COP', 'PEN'];
 const MONTHS = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
 const CASH = 'cash';           // id de la cuenta Efectivo (también usado por datos de versiones anteriores)
-const APP_VERSION = '8.6.0';
+const APP_VERSION = '8.6.1';
 const ACC_TYPES = {
   cash:    { label: 'Efectivo',  emoji: '💵', color: '#34C759' },
   bank:    { label: 'Banco',     emoji: '🏦', color: '#007AFF' },
@@ -378,6 +378,9 @@ function dayLabel(iso) {
   return new Intl.DateTimeFormat('es-UY', { weekday: 'long', day: 'numeric', month: 'long' }).format(d);
 }
 let toastTimer;
+// Muestra cualquier error inesperado en vez de fallar en silencio.
+window.addEventListener('error', (ev) => { try { toast('Error: ' + (ev.message || 'desconocido')); } catch {} });
+window.addEventListener('unhandledrejection', (ev) => { try { toast('Error: ' + (ev.reason?.message || ev.reason || 'desconocido')); } catch {} });
 function toast(msg, action = null) {
   const t = $('toast');
   t.innerHTML = `<span>${esc(msg)}</span>${action ? `<button type="button">${esc(action.label)}</button>` : ''}`;
@@ -2062,7 +2065,7 @@ document.addEventListener('click', (ev) => {
     'pay-mode': () => { S.payMode = el.dataset.mode; updatePay(true); },
     'save-pay': savePay,
     'setup-done': () => { S.cfg.setupPending = false; persist(); render(); },
-    'save-expense': saveExpense,
+    'save-expense': () => { try { saveExpense(); } catch (err) { console.error(err); toast('No se pudo guardar: ' + (err?.message || err)); } },
     'delete-expense': () => {
       if (S.editingRule) {
         if (confirm('¿Eliminar este fijo? Desaparece de todos los meses. Para que deje de correr desde ahora, mejor poné un último mes.')) { const id = S.editingId; $('sheet').close(); undoable('Fijo eliminado', () => deleteRecurring(id)); }
