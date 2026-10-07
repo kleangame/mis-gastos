@@ -7,8 +7,18 @@
   --tabbar: rgba(249,249,249,.86);
   --r: 12px;
 }
+:root { color-scheme: light; }
+:root[data-theme="dark"] {
+  color-scheme: dark;
+    --bg: #000000; --card: #1C1C1E; --card2: #2C2C2E;
+    --label: #FFFFFF; --label2: rgba(235,235,245,.6); --label3: rgba(235,235,245,.3);
+    --sep: rgba(84,84,88,.6); --fill: rgba(118,118,128,.24);
+    --blue: #0A84FF; --red: #FF453A; --green: #30D158; --orange: #FF9F0A;
+    --tabbar: rgba(22,22,22,.86);
+}
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
+  color-scheme: dark;
     --bg: #000000; --card: #1C1C1E; --card2: #2C2C2E;
     --label: #FFFFFF; --label2: rgba(235,235,245,.6); --label3: rgba(235,235,245,.3);
     --sep: rgba(84,84,88,.6); --fill: rgba(118,118,128,.24);

@@ -28,7 +28,7 @@ const CARD_COLORS = [
 const CURRENCIES = ['UYU', 'USD', 'ARS', 'EUR', 'BRL', 'CLP', 'MXN', 'COP', 'PEN'];
 const MONTHS = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
 const CASH = 'cash';           // id de la cuenta Efectivo (también usado por datos de versiones anteriores)
-const APP_VERSION = '8.7.0';
+const APP_VERSION = '8.8.0';
 const ACC_TYPES = {
   cash:    { label: 'Efectivo',  emoji: '💵', color: '#34C759' },
   bank:    { label: 'Banco',     emoji: '🏦', color: '#007AFF' },
@@ -386,6 +386,14 @@ let toastTimer;
 // Muestra cualquier error inesperado en vez de fallar en silencio.
 window.addEventListener('error', (ev) => { try { toast('Error: ' + (ev.message || 'desconocido')); } catch {} });
 window.addEventListener('unhandledrejection', (ev) => { try { toast('Error: ' + (ev.reason?.message || ev.reason || 'desconocido')); } catch {} });
+// Apariencia: '' sigue al sistema; 'light' o 'dark' la fijan. Se guarda también fuera de los datos cifrados para aplicarla antes del PIN.
+function applyTheme() {
+  const t = S.cfg.theme || '';
+  if (t) document.documentElement.dataset.theme = t; else delete document.documentElement.dataset.theme;
+  try { t ? localStorage.setItem('mg-theme', t) : localStorage.removeItem('mg-theme'); } catch {}
+  const dark = t ? t === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches;
+  document.querySelectorAll('meta[name="theme-color"]').forEach((m) => m.setAttribute('content', dark ? '#000000' : '#F2F2F7'));
+}
 function toast(msg, action = null) {
   const t = $('toast');
   t.innerHTML = `<span>${esc(msg)}</span>${action ? `<button type="button">${esc(action.label)}</button>` : ''}`;
@@ -901,6 +909,9 @@ function renderSettings() {
     <div class="section-h"><span>General</span></div>
     <div class="group">
       <label class="row"><span>Tu nombre</span><input id="cfg-nickname" type="text" maxlength="24" placeholder="Opcional" value="${esc(S.cfg.nickname || '')}"></label>
+      <label class="row"><span>Apariencia</span>
+        <select id="cfg-theme">${[['', 'Sistema'], ['light', 'Claro'], ['dark', 'Oscuro']].map(([v, l]) => `<option value="${v}" ${v === (S.cfg.theme || '') ? 'selected' : ''}>${l}</option>`).join('')}</select>
+      </label>
       <label class="row"><span>Moneda</span>
         <select id="cfg-currency">${CURRENCIES.map((c) => `<option ${c === S.cfg.currency ? 'selected' : ''}>${c}</option>`).join('')}</select>
       </label>
@@ -2139,6 +2150,7 @@ document.addEventListener('input', (ev) => {
   if (ev.target.id === 'k-custom-color') { S.catDraft.color = ev.target.value; renderCatPreview(); }
 });
 document.addEventListener('change', (ev) => {
+  if (ev.target.id === 'cfg-theme') { S.cfg.theme = ev.target.value; applyTheme(); persist(); }
   if (ev.target.id === 'cfg-currency') { S.cfg.currency = ev.target.value; S.cfg.usdRate = 0; S.cfg.rateDate = ''; persist(); setMoney(); render(); fetchRate(); }
   if (ev.target.id === 'cfg-nickname') { S.cfg.nickname = ev.target.value.trim().slice(0, 24); S.cfg.askedName = true; persist(); toast(S.cfg.nickname ? 'Nombre guardado' : 'Nombre borrado'); }
   if (ev.target.id === 'cfg-rate') {
@@ -2202,6 +2214,7 @@ async function boot() {
   DATA_KEYS.forEach((k) => { if (d[k] !== undefined) S[k] = d[k]; });
   if (!Array.isArray(S.cats)) S.cats = [];
   S.cfg = { usdRate: 0, rateDate: '', currency: 'UYU', ...(d.cfg || {}) };
+  applyTheme();
   S.receipts = new Set(await idb.keys('receipts'));
   S.hasPreRestore = !!(await idb.get('kv', 'preRestore'));
 
