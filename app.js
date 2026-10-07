@@ -28,7 +28,7 @@ const CARD_COLORS = [
 const CURRENCIES = ['UYU', 'USD', 'ARS', 'EUR', 'BRL', 'CLP', 'MXN', 'COP', 'PEN'];
 const MONTHS = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
 const CASH = 'cash';           // id de la cuenta Efectivo (también usado por datos de versiones anteriores)
-const APP_VERSION = '8.2.0';
+const APP_VERSION = '8.3.0';
 const ACC_TYPES = {
   cash:    { label: 'Efectivo',  emoji: '💵', color: '#34C759' },
   bank:    { label: 'Banco',     emoji: '🏦', color: '#007AFF' },
@@ -42,7 +42,7 @@ const ACC_TYPES = {
 const legacy = {   // localStorage: solo para migrar datos de versiones anteriores a la 8
   get(k, d) { try { const v = JSON.parse(localStorage.getItem(k)); return v ?? d; } catch { return d; } },
 };
-const DATA_KEYS = ['expenses', 'budgets', 'cards', 'recurring', 'accounts', 'transfers'];
+const DATA_KEYS = ['expenses', 'budgets', 'cards', 'recurring', 'accounts', 'transfers', 'cats'];
 const idb = {
   db: null,
   open() {
@@ -66,7 +66,7 @@ const idb = {
   clear(store) { return this.run(store, 'readwrite', (s) => s.clear()); },
 };
 const S = {
-  expenses: [], budgets: {}, cards: [], recurring: [], accounts: null, transfers: [],
+  expenses: [], budgets: {}, cards: [], recurring: [], accounts: null, transfers: [], cats: [],
   cfg: { usdRate: 0, rateDate: '', currency: 'UYU' },
   receipts: new Set(),   // ids de movimientos con foto de recibo
   view: 'home', offset: 0, query: '', catFilter: 'Todas',
@@ -153,8 +153,13 @@ async function resealAll(prevDEK) {
 // ---------- Utilidades ----------
 const $ = (id) => document.getElementById(id);
 const esc = (s = '') => String(s).replace(/[&<>"']/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
-const ALL_CATS = [...CATS, ...INCOME_CATS];
-const cat = (name) => ALL_CATS.find((c) => c.name === name) || CATS[CATS.length - 1];
+// Categorías propias: van antes de «Otros» / «Otros ingresos».
+const userCats = (type) => (S.cats || []).filter((c) => (c.type || 'expense') === type);
+const expCats = () => [...CATS.slice(0, -1), ...userCats('expense'), CATS[CATS.length - 1]];
+const incCats = () => [...INCOME_CATS.slice(0, -1), ...userCats('income'), INCOME_CATS[INCOME_CATS.length - 1]];
+const allCats = () => [...expCats(), ...incCats()];
+const catsFor = (type) => (type === 'income' ? incCats() : expCats());
+const cat = (name) => allCats().find((c) => c.name === name) || CATS[CATS.length - 1];
 const card = (id) => S.cards.find((c) => c.id === id);
 const account = (id) => (S.accounts || []).find((a) => a.id === id);
 const isCardM = (m) => !!card(m);
@@ -373,7 +378,7 @@ function toast(msg, action = null) {
   t.hidden = false; t.classList.toggle('has-action', !!action);
   clearTimeout(toastTimer); toastTimer = setTimeout(() => (t.hidden = true), action ? 7000 : 2600);
 }
-const icon = (c) => `<span class="ci" style="background:${c.color}">${c.emoji}</span>`;
+const icon = (c) => `<span class="ci" style="background:${esc(c.color)}">${esc(c.emoji)}</span>`;
 const progressClass = (p) => (p > 1 ? 'over' : p > .8 ? 'warn' : '');
 // Utilización de crédito: hasta 30% sana, 30-80% atención, más de 80% alta.
 const utilClass = (u) => (u > .8 ? 'over' : u > .3 ? 'warn' : '');
@@ -450,6 +455,71 @@ function barsSVG(endKey) {
   const withData = months.filter((m) => m.spent);
   const avg = withData.length ? sumV(withData.map((m) => ({ value: m.spent }))) / withData.length : 0;
   return { svg: `<svg class="bars" viewBox="0 0 ${W} ${H}" role="img" aria-label="Ingresos y gastos de los últimos 6 meses">${bars}</svg>`, avg };
+}
+
+
+// ---------- Categorías propias ----------
+const CAT_COLORS = ['#FF3B30', '#FF9500', '#FFCC00', '#34C759', '#30B0C7', '#007AFF', '#5856D6', '#AF52DE', '#FF2D55', '#A2845E', '#8E8E93', '#1C1C1E'];
+const CAT_EMOJIS = ['🐶', '🎓', '👶', '🏋️', '✈️', '🚗', '⛽', '☕', '🍺', '🎬', '📚', '💇', '🧾', '📱', '🎁', '🛒', '🏥', '🐱', '⚽', '🎵', '🧹', '💸', '🏖️', '❤️'];
+function openCat(id = null, type = null) {
+  const c = id ? S.cats.find((x) => x.id === id) : null;
+  S.editingCat = c ? c.id : null;
+  S.catDraft = c ? { ...c } : { name: '', emoji: CAT_EMOJIS[0], color: CAT_COLORS[5], type: type || 'expense' };
+  S.catFromForm = !id && !!type;
+  $('k-title').textContent = c ? 'Editar categoría' : 'Nueva categoría';
+  $('k-name').value = S.catDraft.name;
+  $('k-emoji').value = S.catDraft.emoji;
+  $('k-custom-color').value = S.catDraft.color;
+  $('k-delete-group').hidden = !c;
+  $('k-emojis').innerHTML = CAT_EMOJIS.map((e) => `<button type="button" data-action="k-emoji" data-e="${e}">${e}</button>`).join('');
+  $('k-colors').innerHTML = CAT_COLORS.map((col) => `<button type="button" data-action="k-color" data-c="${col}" style="background:${col}" aria-label="Color"></button>`).join('');
+  renderCatPreview();
+  $('ksheet').showModal();
+  if (!c) setTimeout(() => $('k-name').focus(), 120);
+}
+function renderCatPreview() {
+  const d = S.catDraft;
+  $('k-preview').innerHTML = `${icon(d)}<b>${esc(d.name || 'Nombre')}</b>`;
+  document.querySelectorAll('#k-type button').forEach((b) => b.classList.toggle('on', b.dataset.type === d.type));
+  document.querySelectorAll('#k-colors button').forEach((b) => b.classList.toggle('on', b.dataset.c.toLowerCase() === d.color.toLowerCase()));
+  document.querySelectorAll('#k-emojis button').forEach((b) => b.classList.toggle('on', b.dataset.e === d.emoji));
+}
+const firstGrapheme = (str) => {
+  const t = String(str || '').trim(); if (!t) return '';
+  if (window.Intl && Intl.Segmenter) { const seg = new Intl.Segmenter('es', { granularity: 'grapheme' }).segment(t)[Symbol.iterator]().next().value; return seg ? seg.segment : t.slice(0, 2); }
+  return Array.from(t)[0];
+};
+function saveCat() {
+  const d = S.catDraft, name = $('k-name').value.trim().slice(0, 24);
+  if (!name) return toast('Ponele un nombre');
+  const emoji = firstGrapheme($('k-emoji').value) || '🏷️';
+  const old = S.editingCat ? S.cats.find((x) => x.id === S.editingCat) : null;
+  if (allCats().some((c) => c.name.toLowerCase() === name.toLowerCase() && c !== old)) return toast('Ya hay una categoría con ese nombre');
+  const next = { id: old ? old.id : uid(), name, emoji, color: d.color, type: d.type };
+  if (old) {
+    if (old.type !== next.type && [...S.expenses, ...S.recurring].some((e) => e.category === old.name)) return toast('Ya tiene movimientos: no se puede pasar de gasto a ingreso');
+    if (old.name !== name) {   // renombrar en movimientos, fijos y presupuestos
+      [...S.expenses, ...S.recurring].forEach((e) => { if (e.category === old.name) { e.category = name; e.updated = new Date().toISOString(); } });
+      if (S.budgets[old.name] !== undefined) { S.budgets[name] = S.budgets[old.name]; delete S.budgets[old.name]; }
+    }
+    S.cats = S.cats.map((x) => (x.id === old.id ? next : x));
+  } else S.cats.push(next);
+  persist(); $('ksheet').close();
+  if (S.catFromForm && $('sheet').open) { S.selType = next.type; S.selCat = next.name; applyType(); }
+  render(); toast(old ? 'Categoría actualizada' : 'Categoría creada');
+}
+function deleteCat() {
+  const c = S.cats.find((x) => x.id === S.editingCat); if (!c) return;
+  const fb = c.type === 'income' ? 'Otros ingresos' : 'Otros';
+  const n = S.expenses.filter((e) => e.category === c.name).length + S.recurring.filter((e) => e.category === c.name).length;
+  if (n && !confirm(`${plural(n, 'movimiento')} de «${c.name}» pasan a «${fb}». ¿Eliminar la categoría?`)) return;
+  $('ksheet').close();
+  undoable('Categoría eliminada', () => {
+    [...S.expenses, ...S.recurring].forEach((e) => { if (e.category === c.name) { e.category = fb; e.updated = new Date().toISOString(); } });
+    delete S.budgets[c.name];
+    S.cats = S.cats.filter((x) => x.id !== c.id);
+    persist(); render();
+  });
 }
 
 // ---------- Saludo ----------
@@ -533,7 +603,7 @@ function renderHome() {
 
 function renderList() {
   const q = S.query.trim().toLowerCase();
-  const filters = ['Todas', 'Ingresos', 'Fijos', 'Tarjeta', 'Transferencias', ...CATS.map((c) => c.name)];
+  const filters = ['Todas', 'Ingresos', 'Fijos', 'Tarjeta', 'Transferencias', ...expCats().map((c) => c.name)];
   const items = monthEntries(S.offset)
     .filter((e) => S.catFilter === 'Todas'
       || (S.catFilter === 'Ingresos' && isIncome(e))
@@ -557,7 +627,7 @@ function renderList() {
     </label>
     <div class="chips">${filters.map((n) => {
       const lbl = n === 'Todas' ? n : n === 'Ingresos' ? '💰 Ingresos' : n === 'Tarjeta' ? '💳 Tarjeta' : n === 'Transferencias' ? '⇄ Transferencias' : n === 'Fijos' ? '📌 Fijos' : cat(n).emoji + ' ' + n;
-      return `<button class="chip ${S.catFilter === n ? 'on' : ''}" data-action="filter" data-cat="${n}">${lbl}</button>`;
+      return `<button class="chip ${S.catFilter === n ? 'on' : ''}" data-action="filter" data-cat="${esc(n)}">${lbl}</button>`;
     }).join('')}</div>
     ${items.length ? Object.entries(groups).map(([date, list]) => {
       const n = net(list);
@@ -722,9 +792,9 @@ function renderBudgets() {
     </div>
     ${fixedSection()}
     <div class="section-h"><span>Categorías</span></div>
-    <div class="group">${CATS.map((c) => {
+    <div class="group">${expCats().map((c) => {
       const b = Number(S.budgets[c.name] || 0), s = spent[c.name] || 0, p = b ? s / b : 0;
-      return `<button class="row brow" data-action="edit-budget" data-cat="${c.name}">
+      return `<button class="row brow" data-action="edit-budget" data-cat="${esc(c.name)}">
         <div class="top">${icon(c)}
           <span class="ri"><b>${c.name}</b><small>${b ? `${fmt(s)} de ${fmt(b)}` : s ? `${fmt(s)} · sin límite` : 'Sin límite · tocá para definir'}</small></span>
           ${b ? `<span class="amt ${p > 1 ? 'danger' : ''}">${p > 1 ? '-' + fmt(s - b) : fmt(b - s)}</span>` : '<span class="chev"></span>'}
@@ -765,6 +835,11 @@ function renderSettings() {
       <button class="row blue" data-action="refresh-rate">Actualizar cotización<span class="val">${S.cfg.rateDate ? (S.cfg.rateManual ? 'manual' : new Date(S.cfg.rateDate).toLocaleString('es-UY', { day: 'numeric', month: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false })) : ''}</span></button>` : ''}
     </div>
     ${usdMode() ? `<p class="footer-note">Podés cargar movimientos en dólares. Se convierten a ${esc(S.cfg.currency)} con la cotización del día en que los cargás; los fijos en dólares usan la cotización actual.</p>` : ''}
+    <div class="section-h"><span>Mis categorías</span></div>
+    <div class="group">
+      ${S.cats.map((c) => `<button class="row" data-action="edit-cat" data-id="${esc(c.id)}"><span class="ri-inline">${icon(c)}${esc(c.name)}</span><span class="val">${c.type === 'income' ? 'Ingreso' : 'Gasto'}</span></button>`).join('')}
+      <button class="row blue" data-action="new-cat">Agregar categoría<span></span></button>
+    </div>
     <div class="section-h"><span>Datos</span></div>
     <div class="group">
       <button class="row blue" data-action="import">Importar estado de cuenta (CSV)<span></span></button>
@@ -961,7 +1036,7 @@ async function snapshot(withReceipts = true) {
   const receipts = {};
   if (withReceipts) for (const id of S.receipts) { const b = await getReceipt(id).catch(() => null); if (b) receipts[id] = await blobToB64(b); }
   return { app: 'mis-gastos', version: APP_VERSION, date: new Date().toISOString(),
-    expenses: S.expenses, budgets: S.budgets, cards: S.cards, recurring: S.recurring, accounts: S.accounts, transfers: S.transfers,
+    expenses: S.expenses, budgets: S.budgets, cats: S.cats, cards: S.cards, recurring: S.recurring, accounts: S.accounts, transfers: S.transfers,
     cfg: { currency: S.cfg.currency, usdRate: S.cfg.usdRate }, receipts };
 }
 // Devuelve true si la copia se guardó.
@@ -999,14 +1074,14 @@ async function wipe() {
   if (!(await offerBackupFirst('borrar'))) return;
   if (!confirm('¿Borrar todos los datos de este celular? Solo vas a poder recuperarlos con una copia.')) return;
   undoable('Datos borrados', () => {
-    S.expenses = []; S.budgets = {}; S.cards = []; S.recurring = []; S.transfers = []; S.accounts = null;
+    S.expenses = []; S.budgets = {}; S.cards = []; S.recurring = []; S.transfers = []; S.accounts = null; S.cats = [];
     ensureCash(); persist(); render();
   });
   idb.del('kv', 'preRestore'); S.hasPreRestore = false;
 }
 async function applyBackup(d) {
   S.expenses = d.expenses; S.budgets = d.budgets || {}; S.cards = d.cards || []; S.recurring = d.recurring || [];
-  S.accounts = d.accounts || null; S.transfers = d.transfers || [];
+  S.accounts = d.accounts || null; S.transfers = d.transfers || []; S.cats = d.cats || [];
   if (d.cfg?.currency) { S.cfg.currency = d.cfg.currency; S.cfg.usdRate = d.cfg.usdRate || S.cfg.usdRate; }
   if (d.receipts) {
     for (const id of [...S.receipts]) await delReceipt(id);
@@ -1058,7 +1133,7 @@ function openExpense(id = null, fixed = false) {
   S.editingId = e ? e.id : null;
   S.editingRule = !!rule;
   S.selType = e ? (e.type || 'expense') : (S.catFilter === 'Ingresos' ? 'income' : 'expense');
-  const cats = S.selType === 'income' ? INCOME_CATS : CATS;
+  const cats = catsFor(S.selType);
   S.selCat = e ? e.category : (cats.some((c) => c.name === S.catFilter) ? S.catFilter : cats[0].name);
   $('f-amount').value = e ? String(e.amount).replace('.', ',') : '';
   S.selCur = e && isUSD(e) ? USD : '';
@@ -1085,7 +1160,7 @@ function applyType() {
   const inc = S.selType === 'income';
   document.querySelectorAll('#f-type button').forEach((b) => b.classList.toggle('on', b.dataset.type === S.selType));
   $('sheet-title').textContent = (S.editingId ? 'Editar ' : 'Nuevo ') + (inc ? 'ingreso' : 'gasto');
-  const cats = inc ? INCOME_CATS : CATS;
+  const cats = catsFor(S.selType);
   if (!cats.some((c) => c.name === S.selCat)) S.selCat = cats[0].name;
   if (inc && !account(S.selMethod)) S.selMethod = account(S.cfg.lastIncomeMethod) ? S.cfg.lastIncomeMethod : CASH;
   renderFrom();
@@ -1113,9 +1188,10 @@ function renderFrom() {
   $('f-from').innerHTML = opts.map((o) => `<button type="button" class="chip ${o.id === S.selMethod ? 'on' : ''}" data-action="pick-from" data-id="${esc(o.id)}">${esc(o.label)}</button>`).join('');
 }
 function renderCatGrid() {
-  const cats = S.selType === 'income' ? INCOME_CATS : CATS;
+  const cats = catsFor(S.selType);
   $('f-cats').innerHTML = cats.map((c) =>
-    `<button type="button" class="${c.name === S.selCat ? 'on' : ''}" data-action="pick-cat" data-cat="${c.name}">${icon(c)}${c.name}</button>`).join('');
+    `<button type="button" class="${c.name === S.selCat ? 'on' : ''}" data-action="pick-cat" data-cat="${esc(c.name)}">${icon(c)}${esc(c.name)}</button>`).join('')
+    + `<button type="button" class="newcat" data-action="new-cat">${icon({ emoji: '＋', color: 'var(--fill)' })}Nueva</button>`;
 }
 function updateRec() {
   $('f-receipt-group').hidden = $('f-rec').checked;
@@ -1680,8 +1756,8 @@ function importItems() {
     const note = String(r[ni] || '').replace(/\s+/g, ' ').trim().slice(0, 80);
     const amount = r2(Math.abs(amt));
     const valid = date && amount > 0;
-    let category = IMP.own && ki >= 0 && ALL_CATS.some((c) => c.name === r[ki]) ? r[ki] : guessCategory(note, income);
-    if (!income && INCOME_CATS.some((c) => c.name === category)) category = 'Otros';
+    let category = IMP.own && ki >= 0 && allCats().some((c) => c.name === r[ki]) ? r[ki] : guessCategory(note, income);
+    if (!income && incCats().some((c) => c.name === category)) category = 'Otros';
     const k = `${date}|${amount}|${note.toLowerCase()}`;
     const dup = seen.has(k); seen.add(k);
     return { valid, dup, e: { id: uid(), type: income ? 'income' : 'expense', amount, category, date, note, method: income && !acc ? CASH : method,
@@ -1740,6 +1816,14 @@ document.addEventListener('click', (ev) => {
     'close-ysheet': () => $('ysheet').close(),
     'save-yield': saveYield,
     'save-name': () => saveName($('n-name').value),
+    'new-cat': () => openCat(null, $('sheet').open ? S.selType : null),
+    'edit-cat': () => openCat(el.dataset.id),
+    'close-ksheet': () => $('ksheet').close(),
+    'save-cat': saveCat,
+    'delete-cat': deleteCat,
+    'k-type': () => { S.catDraft.type = el.dataset.type; renderCatPreview(); },
+    'k-emoji': () => { S.catDraft.emoji = el.dataset.e; $('k-emoji').value = el.dataset.e; renderCatPreview(); },
+    'k-color': () => { S.catDraft.color = el.dataset.c; $('k-custom-color').value = el.dataset.c; renderCatPreview(); },
     'skip-name': () => saveName(''),
     'yield-estimate': () => { const a = account(S.yieldAcc); const tna = parseAmount($('y-tna').value); const { est, bal } = yieldEstimate(a, tna); $('y-balance').value = numStr(r2(bal + est)); updateYield(); },
     'save-account': saveAccount,
@@ -1833,6 +1917,9 @@ document.addEventListener('input', (ev) => {
   if (['t-amount', 't-rate'].includes(ev.target.id)) updateTransfer();
   if (['p-amount', 'p-rate'].includes(ev.target.id)) updatePay();
   if (ev.target.id === 'y-balance') updateYield();
+  if (ev.target.id === 'k-name') { S.catDraft.name = ev.target.value; renderCatPreview(); }
+  if (ev.target.id === 'k-emoji') { S.catDraft.emoji = firstGrapheme(ev.target.value) || S.catDraft.emoji; renderCatPreview(); }
+  if (ev.target.id === 'k-custom-color') { S.catDraft.color = ev.target.value; renderCatPreview(); }
 });
 document.addEventListener('change', (ev) => {
   if (ev.target.id === 'cfg-currency') { S.cfg.currency = ev.target.value; S.cfg.usdRate = 0; S.cfg.rateDate = ''; persist(); setMoney(); render(); fetchRate(); }
@@ -1848,7 +1935,7 @@ document.addEventListener('change', (ev) => {
   if (ev.target.id === 'a-type') updateAccountForm();
   if (['f-rec', 'f-end-mode', 'f-end', 'f-date'].includes(ev.target.id)) updateRec();
 });
-['sheet', 'bsheet', 'csheet', 'asheet', 'tsheet', 'psheet', 'rsheet', 'isheet', 'ysheet', 'nsheet'].forEach((id) => $(id).addEventListener('click', (ev) => { if (ev.target.id === id) ev.target.close(); }));
+['sheet', 'bsheet', 'csheet', 'asheet', 'tsheet', 'psheet', 'rsheet', 'isheet', 'ysheet', 'nsheet', 'ksheet'].forEach((id) => $(id).addEventListener('click', (ev) => { if (ev.target.id === id) ev.target.close(); }));
 $('f-amount').addEventListener('keydown', (ev) => { if (ev.key === 'Enter') saveExpense(); });
 
 if ('serviceWorker' in navigator) {
@@ -1890,6 +1977,7 @@ async function boot() {
   else if (LOCK) touchSession();
   const d = (await unseal(rec)) || {};
   DATA_KEYS.forEach((k) => { if (d[k] !== undefined) S[k] = d[k]; });
+  if (!Array.isArray(S.cats)) S.cats = [];
   S.cfg = { usdRate: 0, rateDate: '', currency: 'UYU', ...(d.cfg || {}) };
   S.receipts = new Set(await idb.keys('receipts'));
   S.hasPreRestore = !!(await idb.get('kv', 'preRestore'));

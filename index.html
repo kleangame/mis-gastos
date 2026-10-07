@@ -253,6 +253,35 @@
     </div>
   </dialog>
 
+  <!-- Categoría propia -->
+  <dialog id="ksheet" class="sheet">
+    <div class="grabber"></div>
+    <header class="sheet-head">
+      <button type="button" class="link" data-action="close-ksheet">Cancelar</button>
+      <strong id="k-title">Nueva categoría</strong>
+      <button type="button" class="link bold" data-action="save-cat">Guardar</button>
+    </header>
+    <div class="k-preview" id="k-preview"></div>
+    <div class="segmented" id="k-type" style="margin:0 16px 14px">
+      <button type="button" data-action="k-type" data-type="expense">Gasto</button>
+      <button type="button" data-action="k-type" data-type="income">Ingreso</button>
+    </div>
+    <div class="group">
+      <label class="row"><span>Nombre</span><input id="k-name" type="text" maxlength="24" placeholder="Mascotas"></label>
+      <label class="row"><span>Emoji</span><input id="k-emoji" type="text" maxlength="16" placeholder="🐶" style="font-size:20px"></label>
+    </div>
+    <div class="section-h"><span>Elegí un emoji o escribí el tuyo</span></div>
+    <div class="k-emojis" id="k-emojis"></div>
+    <div class="section-h"><span>Color de fondo</span></div>
+    <div class="k-colors" id="k-colors"></div>
+    <div class="group">
+      <label class="row"><span>Otro color</span><input id="k-custom-color" type="color" class="k-picker"></label>
+    </div>
+    <div class="group" id="k-delete-group" hidden>
+      <button type="button" class="row danger center" data-action="delete-cat">Eliminar categoría</button>
+    </div>
+  </dialog>
+
   <!-- Bienvenida (nombre opcional) -->
   <dialog id="nsheet" class="sheet small">
     <div class="grabber"></div>

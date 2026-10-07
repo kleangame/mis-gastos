@@ -284,3 +284,16 @@ details.adv[open] summary::after { content: " ⌄"; }
 .welcome h2 { margin: 6px 0 6px; font-size: 22px; }
 .welcome .field { margin-top: 18px; text-align: center; }
 .welcome .link { display: block; margin: -8px auto 0; }
+
+/* Categorías propias */
+.k-preview { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 6px 0 14px; }
+.k-preview .ci { width: 56px; height: 56px; font-size: 30px; border-radius: 16px; }
+.k-preview b { font-size: 17px; }
+.k-emojis, .k-colors { display: grid; grid-template-columns: repeat(8, 1fr); gap: 8px; margin: 0 16px 16px; }
+.k-emojis button { height: 40px; border-radius: 10px; background: var(--card); font-size: 22px; }
+.k-emojis button.on { box-shadow: inset 0 0 0 2px var(--blue); }
+.k-colors { grid-template-columns: repeat(6, 1fr); }
+.k-colors button { aspect-ratio: 1; border-radius: 50%; }
+.k-colors button.on { box-shadow: 0 0 0 3px var(--bg), 0 0 0 5px var(--blue); }
+.k-picker { width: 44px; height: 30px; border: none; background: none; padding: 0; }
+.ri-inline { display: flex; align-items: center; gap: 10px; }

@@ -49,7 +49,7 @@ ok(await page.locator('#view-home >> text=Almuerzo').count() > 0, 'agrega un gas
 await page.click('#view-home >> text=Almuerzo'); await page.click('[data-action="delete-expense"]');
 ok((await toastText()).includes('eliminado'), 'eliminar muestra aviso con Deshacer');
 ok(await page.locator('#view-home >> text=Almuerzo').count() === 0, 'el gasto desaparece');
-await page.click('#toast button'); await page.waitForTimeout(300);
+await page.click('#toast button'); await page.waitForTimeout(200); await page.waitForTimeout(300);
 ok(await page.locator('#view-home >> text=Almuerzo').count() > 0, 'Deshacer lo recupera');
 await page.reload(); await ready();
 ok(await page.locator('#view-home >> text=Almuerzo').count() > 0, 'lo recuperado queda guardado tras recargar');
@@ -76,6 +76,28 @@ await page.click('[data-action="save-yield"]');
 const yr = await page.evaluate(() => ({ bal: accountBalance(account('prex')), inc: S.expenses.filter((e) => e.category === 'Rendimientos').map((e) => e.amount), est: yieldEstimate(account('prex')).est }));
 ok(yr.bal === 100120 && yr.inc[0] === 120 && yr.est === 0, 'registra el rendimiento como ingreso y reinicia la estimación');
 await page.evaluate(() => { S.accounts = S.accounts.filter((a) => a.id !== 'prex'); S.expenses = S.expenses.filter((e) => e.method !== 'prex'); persist(); render(); });
+
+// 3c. Categorías propias
+await page.click('[data-tab="settings"]');
+await page.click('#view-settings [data-action="new-cat"]');
+await page.fill('#k-name', 'Mascotas'); await page.dispatchEvent('#k-name', 'input');
+await page.click('#k-emojis [data-e="🐶"]'); await page.click('#k-colors [data-c="#AF52DE"]');
+ok((await page.locator('#k-preview').textContent()).includes('Mascotas'), 'vista previa de la categoría');
+await page.click('[data-action="save-cat"]');
+ok(await page.evaluate(() => S.cats.length === 1 && S.cats[0].emoji === '🐶' && S.cats[0].color === '#AF52DE'), 'crea categoría con nombre, emoji y color');
+await page.evaluate(() => { openExpense(); });
+ok(await page.locator('#f-cats [data-cat="Mascotas"]').count() === 1, 'la categoría aparece al cargar un gasto');
+await page.fill('#f-amount', '700'); await page.click('#f-cats [data-cat="Mascotas"]'); await page.click('[data-action="save-expense"]'); await page.waitForTimeout(150);
+ok(await page.evaluate(() => S.expenses.some((e) => e.category === 'Mascotas' && e.amount === 700)), 'guarda un gasto en la categoría nueva');
+await page.click('[data-tab="budgets"]');
+ok(await page.locator('#view-budgets [data-cat="Mascotas"]').count() === 1, 'la categoría aparece en Presupuestos');
+await page.evaluate(() => { openCat(S.cats[0].id); }); await page.fill('#k-name', 'Perro'); await page.click('[data-action="save-cat"]');
+ok(await page.evaluate(() => S.expenses.some((e) => e.category === 'Perro') && !S.expenses.some((e) => e.category === 'Mascotas')), 'renombrar actualiza los movimientos');
+await page.evaluate(() => { openCat(S.cats[0].id); }); await page.click('[data-action="delete-cat"]');
+ok(await page.evaluate(() => S.cats.length === 0 && S.expenses.some((e) => e.amount === 700 && e.category === 'Otros')), 'eliminar pasa los movimientos a Otros');
+await page.click('#toast button'); await page.waitForTimeout(200);
+ok(await page.evaluate(() => S.cats.length === 1 && S.expenses.some((e) => e.category === 'Perro')), 'deshacer recupera la categoría');
+await page.evaluate(() => { S.expenses = S.expenses.filter((e) => e.category !== 'Perro'); S.cats = []; persist(); render(); });
 
 // 4. Foto del recibo
 await page.click('[data-tab="home"]');
