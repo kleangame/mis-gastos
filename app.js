@@ -28,7 +28,7 @@ const CARD_COLORS = [
 const CURRENCIES = ['UYU', 'USD', 'ARS', 'EUR', 'BRL', 'CLP', 'MXN', 'COP', 'PEN'];
 const MONTHS = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
 const CASH = 'cash';           // id de la cuenta Efectivo (también usado por datos de versiones anteriores)
-const APP_VERSION = '8.6.1';
+const APP_VERSION = '8.6.2';
 const ACC_TYPES = {
   cash:    { label: 'Efectivo',  emoji: '💵', color: '#34C759' },
   bank:    { label: 'Banco',     emoji: '🏦', color: '#007AFF' },
@@ -1266,7 +1266,8 @@ function applyScan(cfe, photo) {
   $('f-note').placeholder = m?.name ? 'Opcional' : 'Nombre del comercio (lo recuerdo)';
   applyType();
   toast(dup ? '⚠️ Este ticket ya está cargado. Revisá antes de guardar.'
-    : `${cfe.label} leído: ${fmt(cfe.amount)}${m?.name ? ' en ' + m.name : ''}. Revisá y guardá.`);
+    : `${cfe.label} leído: ${fmt(cfe.amount)}${m?.name ? ' en ' + m.name : ''}. ${cfe.type === 'income' ? 'Entra a' : 'Sale de'} ${(account(S.selMethod) || card(S.selMethod))?.name || 'efectivo'}: cambialo en «${cfe.type === 'income' ? 'A' : 'Desde'}» si no es así.`);
+  if (!m?.method) { const sel = $('f-from'); sel.classList.add('attn'); setTimeout(() => sel.classList.remove('attn'), 2500); }
 }
 // Plan B: escaneás el QR con la cámara del celular (o Google Lens), copiás el link y lo pegás acá.
 async function pasteCfe() {

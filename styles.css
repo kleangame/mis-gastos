@@ -301,3 +301,5 @@ details.adv[open] summary::after { content: " ⌄"; }
 .row select.from-sel { flex: 3; text-overflow: ellipsis; font-size: 15px; }
 .from-lbl { display: flex; flex-direction: column; line-height: 1.2; }
 .from-lbl small { font-size: 12px; color: var(--label2); white-space: nowrap; }
+
+.from-sel.attn { outline: 2px solid var(--orange, #ff9500); border-radius: 8px; transition: outline .3s; }
