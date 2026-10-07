@@ -35,6 +35,10 @@ await page.evaluate(async () => {
   localStorage.setItem('mg.cfg', JSON.stringify({ currency: 'UYU', usdRate: 40 }));
 });
 await page.reload(); await ready();
+await page.waitForSelector('#nsheet[open]', { timeout: 3000 }).catch(() => {});
+ok(await page.locator('#nsheet[open]').count() === 1, 'la primera vez pregunta el nombre (opcional)');
+await page.fill('#n-name', 'Kle'); await page.click('[data-action="save-name"]');
+ok((await page.locator('#view-home .greet').textContent()).includes('Kle'), 'saluda con el apodo arriba a la izquierda');
 ok(await page.locator('text=Farmacia vieja').count() > 0, 'migra los datos de localStorage a IndexedDB');
 ok(await page.evaluate(() => localStorage.getItem('mg.expenses')) === null, 'borra la copia vieja de localStorage después de verificar');
 ok((await idbRaw()).includes('Farmacia vieja'), 'los datos quedan en IndexedDB');
@@ -59,7 +63,22 @@ ok((await toastText()).includes('Te pasaste'), 'avisa al pasarse del presupuesto
 ok(await page.locator('#view-home .alert.over').count() === 1, 'Resumen muestra la alerta de presupuesto');
 ok(await page.locator('#view-home svg.bars g').count() === 6, 'Resumen muestra el gráfico de 6 meses');
 
+// 3b. Rendimiento estimado y real
+await page.evaluate(() => { const a = { id: 'prex', name: 'Prex', type: 'savings', currency: '', initial: 100000, since: '2026-01-01T00:00:00Z', tna: 3.65, yieldFrom: isoDate(new Date(Date.now() - 10 * 864e5)) }; S.accounts.push(a); persist(); render(); });
+const est = await page.evaluate(() => yieldEstimate(account('prex')).est);
+ok(est > 99 && est < 101, 'estima el rendimiento con la tasa (~100 en 10 días): ' + est);
+await page.click('[data-tab="cards"]');
+ok((await page.locator('[data-id="prex"]').textContent()).includes('(estimado)'), 'Cuentas muestra el rendimiento estimado');
+await page.click('[data-id="prex"]'); await page.click('#a-yield-btn');
+await page.fill('#y-balance', '100120'); await page.dispatchEvent('#y-balance', 'input');
+ok((await page.locator('#y-diff').textContent()).includes('120'), 'permite escribir el saldo real y calcula la diferencia');
+await page.click('[data-action="save-yield"]');
+const yr = await page.evaluate(() => ({ bal: accountBalance(account('prex')), inc: S.expenses.filter((e) => e.category === 'Rendimientos').map((e) => e.amount), est: yieldEstimate(account('prex')).est }));
+ok(yr.bal === 100120 && yr.inc[0] === 120 && yr.est === 0, 'registra el rendimiento como ingreso y reinicia la estimación');
+await page.evaluate(() => { S.accounts = S.accounts.filter((a) => a.id !== 'prex'); S.expenses = S.expenses.filter((e) => e.method !== 'prex'); persist(); render(); });
+
 // 4. Foto del recibo
+await page.click('[data-tab="home"]');
 await page.click('#view-home >> text=Cena');
 const [fc] = await Promise.all([page.waitForEvent('filechooser'), page.click('#f-receipt-add')]);
 await fc.setFiles(DIR + 'recibo.png');

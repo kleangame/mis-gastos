@@ -171,12 +171,16 @@
       <label class="row"><span id="a-balance-label">Saldo actual</span><input id="a-balance" inputmode="decimal" placeholder="0"></label>
     </div>
     <p class="hint sheet-hint" id="a-hint"></p>
+    <div class="group" id="a-yield-group" hidden>
+      <label class="row"><span>Rinde (% anual)</span><input id="a-tna" inputmode="decimal" placeholder="Opcional"></label>
+    </div>
     <div class="group" id="a-goal-group" hidden>
       <label class="row"><span>Meta</span><input id="a-goal" inputmode="decimal" placeholder="Opcional"></label>
       <label class="row"><span>Para</span><input id="a-goal-date" type="month"></label>
     </div>
     <div class="group" id="a-actions" hidden>
       <button type="button" class="row blue" data-action="account-transfer">⇄ Transferir desde esta cuenta<span></span></button>
+      <button type="button" class="row blue" data-action="open-yield" id="a-yield-btn" hidden>📈 Registrar rendimiento<span></span></button>
     </div>
     <div id="a-moves" class="sheet-moves"></div>
     <div class="group" id="a-delete-group" hidden>
@@ -247,6 +251,37 @@
     <div class="group" id="p-delete-group" hidden>
       <button type="button" class="row danger center" data-action="delete-transfer">Eliminar pago</button>
     </div>
+  </dialog>
+
+  <!-- Bienvenida (nombre opcional) -->
+  <dialog id="nsheet" class="sheet small">
+    <div class="grabber"></div>
+    <div class="welcome">
+      <div class="welcome-icon">👋</div>
+      <h2>¡Hola! Te damos la bienvenida</h2>
+      <p class="hint center">¿Cómo querés que te llamemos? Es opcional y lo podés cambiar en Ajustes.</p>
+      <input id="n-name" class="field" type="text" maxlength="24" placeholder="Tu nombre o apodo" autocomplete="given-name" enterkeyhint="done">
+      <button class="btn" data-action="save-name">Listo</button>
+      <button class="link" data-action="skip-name">Ahora no</button>
+    </div>
+  </dialog>
+
+  <!-- Rendimiento de una cuenta -->
+  <dialog id="ysheet" class="sheet small">
+    <div class="grabber"></div>
+    <header class="sheet-head">
+      <button type="button" class="link" data-action="close-ysheet">Cancelar</button>
+      <strong id="y-title">Rendimiento</strong>
+      <button type="button" class="link bold" data-action="save-yield">Guardar</button>
+    </header>
+    <p class="hint center" id="y-period" style="margin:0 16px 14px"></p>
+    <div class="group">
+      <label class="row"><span>Saldo hoy</span><input id="y-balance" inputmode="decimal" placeholder="0"></label>
+      <label class="row"><span>Tasa anual (%)</span><input id="y-tna" inputmode="decimal" placeholder="0"></label>
+      <div class="row"><span>Rendimiento</span><span class="val" id="y-diff"></span></div>
+    </div>
+    <button type="button" class="link center" style="display:block;margin:0 auto 10px" data-action="yield-estimate" id="y-est-btn">Usar el estimado</button>
+    <p class="footer-note">Viene completado con lo que estimamos según la tasa. Si en la app de tu banco ves otro saldo, escribilo: la diferencia queda como ingreso «Rendimientos».</p>
   </dialog>
 
   <!-- Foto del recibo -->

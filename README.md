@@ -16,6 +16,8 @@ App web instalable (PWA) para registrar gastos, ingresos, cuentas, tarjetas y pr
 - Foto del recibo en cada movimiento (se achica a 1280 px).
 - Importar el estado de cuenta del banco en CSV: detecta columnas, débito/crédito, categorías y repetidos.
 - «Deshacer» después de eliminar, importar o borrar.
+- Rendimientos: cada cuenta puede tener una tasa anual; la app estima lo ganado (interés compuesto diario) y con «Registrar rendimiento» guardás el saldo real o el estimado. La diferencia queda como ingreso «Rendimientos».
+- Saludo con tu nombre o apodo (opcional; se pregunta la primera vez y se cambia en Ajustes).
 
 ## Seguridad en el celular
 

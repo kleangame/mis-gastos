@@ -17,6 +17,7 @@ const INCOME_CATS = [
   { name: 'Freelance',      emoji: '💻', color: '#30B0C7' },
   { name: 'Ventas',         emoji: '🏷️', color: '#5856D6' },
   { name: 'Regalos',        emoji: '🎁', color: '#FF2D55' },
+  { name: 'Rendimientos',   emoji: '📈', color: '#30D158' },
   { name: 'Otros ingresos', emoji: '💰', color: '#A2845E' },
 ];
 const CARD_COLORS = [
@@ -27,7 +28,7 @@ const CARD_COLORS = [
 const CURRENCIES = ['UYU', 'USD', 'ARS', 'EUR', 'BRL', 'CLP', 'MXN', 'COP', 'PEN'];
 const MONTHS = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
 const CASH = 'cash';           // id de la cuenta Efectivo (también usado por datos de versiones anteriores)
-const APP_VERSION = '8.1.0';
+const APP_VERSION = '8.2.0';
 const ACC_TYPES = {
   cash:    { label: 'Efectivo',  emoji: '💵', color: '#34C759' },
   bank:    { label: 'Banco',     emoji: '🏦', color: '#007AFF' },
@@ -304,6 +305,16 @@ function accountBalance(a) {
   return r2(b);
 }
 const accountBase = (a) => toBase(accountBalance(a), accCur(a));
+// ---------- Rendimientos ----------
+// Estimación con interés compuesto diario según la tasa anual que pusiste. Es solo una guía hasta que registres el real.
+const canYield = (a) => !!a && a.type !== 'cash';
+const yieldFrom = (a) => a.yieldFrom || dateOnly(a.since) || isoDate(new Date());
+const daysSince = (iso) => Math.max(0, Math.round((parseLocal(isoDate(new Date())) - parseLocal(iso)) / 864e5));
+function yieldEstimate(a, tna = Number(a.tna) || 0) {
+  const bal = accountBalance(a), days = daysSince(yieldFrom(a));
+  if (!(tna > 0) || bal <= 0 || !days) return { est: 0, days, bal };
+  return { est: r2(bal * (Math.pow(1 + tna / 100 / 365, days) - 1)), days, bal };
+}
 
 // Tarjeta: deuda en pesos y en dólares por separado. Cuenta las cuotas desde que la tarjeta se registró
 // (las anteriores se asumen pagadas) hasta este mes, menos los pagos de resumen.
@@ -441,6 +452,24 @@ function barsSVG(endKey) {
   return { svg: `<svg class="bars" viewBox="0 0 ${W} ${H}" role="img" aria-label="Ingresos y gastos de los últimos 6 meses">${bars}</svg>`, avg };
 }
 
+// ---------- Saludo ----------
+function greeting() {
+  const n = (S.cfg.nickname || '').trim();
+  if (!n) return '';
+  const h = new Date().getHours();
+  const g = h >= 5 && h < 12 ? 'Buen día' : h >= 12 && h < 20 ? 'Buenas tardes' : 'Buenas noches';
+  return `<span class="greet">${g}, <b>${esc(n)}</b> 👋</span>`;
+}
+function askName() {
+  $('n-name').value = S.cfg.nickname || '';
+  $('nsheet').showModal();
+}
+function saveName(name) {
+  S.cfg.nickname = String(name || '').trim().slice(0, 24); S.cfg.askedName = true;
+  persist(); $('nsheet').close(); render();
+  if (S.cfg.nickname) toast(`¡Hola, ${S.cfg.nickname}!`);
+}
+
 // ---------- Vistas ----------
 function renderHome() {
   const entries = monthEntries(S.offset).sort(sortDesc);
@@ -460,7 +489,7 @@ function renderHome() {
     delta = `<span class="delta ${d > 0 ? 'up' : 'down'}">Gastos ${d > 0 ? '▲' : '▼'} ${Math.abs(d * 100).toFixed(0)}% vs. ${prevName}</span>`;
   }
   $('view-home').innerHTML = `
-    ${header('Resumen')}
+    ${header('Resumen').replace('<div class="nav">', `<div class="nav">${greeting()}`)}
     ${monthPicker()}
     <div class="card hero">
       <small>Balance de ${name}</small>
@@ -562,6 +591,8 @@ function accountRow(a) {
   const bal = accountBalance(a), cur = accCur(a), t = ACC_TYPES[a.type] || ACC_TYPES.bank;
   const goal = Number(a.goal) || 0, p = goal ? Math.max(bal, 0) / goal : 0;
   let sub = t.label + (cur === USD ? ' · USD' : '');
+  const y = Number(a.tna) > 0 ? yieldEstimate(a) : null;
+  if (y) sub = y.est >= 0.01 ? `Rinde ≈ +${fmtCur(y.est, cur)} (estimado)` : `Rinde ${String(a.tna).replace('.', ',')}% anual`;
   if (goal) {
     sub = `${Math.round(p * 100)}% de ${fmtCur(goal, cur)}`;
     if (a.goalDate && bal < goal) {
@@ -726,6 +757,7 @@ function renderSettings() {
     <p class="footer-note">${LOCK ? 'Tus datos y fotos están cifrados en este celular. Te pide PIN o huella al abrir la app, salvo que la hayas usado en los últimos 10 minutos.' : 'Pide un PIN al abrir la app y guarda tus datos cifrados en el celular, para que nadie los vea aunque tenga tu teléfono.'}</p>
     <div class="section-h"><span>General</span></div>
     <div class="group">
+      <label class="row"><span>Tu nombre</span><input id="cfg-nickname" type="text" maxlength="24" placeholder="Opcional" value="${esc(S.cfg.nickname || '')}"></label>
       <label class="row"><span>Moneda</span>
         <select id="cfg-currency">${CURRENCIES.map((c) => `<option ${c === S.cfg.currency ? 'selected' : ''}>${c}</option>`).join('')}</select>
       </label>
@@ -1213,6 +1245,7 @@ function openAccount(id = null) {
   $('a-balance').value = a ? numStr(accountBalance(a)) : '';
   $('a-goal').value = a && a.goal ? numStr(a.goal) : '';
   $('a-goal-date').value = a && a.goalDate ? a.goalDate : '';
+  $('a-tna').value = a && a.tna ? numStr(a.tna) : '';
   $('a-delete-group').hidden = !a || a.id === CASH;
   $('a-actions').hidden = !a;
   const today = isoDate(new Date());
@@ -1229,6 +1262,8 @@ function openAccount(id = null) {
 function updateAccountForm() {
   const t = $('a-type').value, a = account(S.editingAccountId);
   $('a-goal-group').hidden = !(t === 'savings' || t === 'invest');
+  $('a-yield-group').hidden = t === 'cash';
+  $('a-yield-btn').hidden = !a || t === 'cash';
   $('a-balance-label').textContent = t === 'invest' ? 'Valor actual' : 'Saldo actual';
   $('a-hint').textContent = a ? (t === 'invest' ? 'Si cambiás el valor, se registra la ganancia o pérdida sin tocar tu balance del mes.'
     : 'Si cambiás el saldo, se registra un ajuste por la diferencia.') : 'Desde ahora, el saldo se mueve solo con cada gasto, ingreso o transferencia.';
@@ -1238,11 +1273,12 @@ function saveAccount() {
   const bal = parseAmount($('a-balance').value);
   if (!name) return toast('Poné un nombre, por ejemplo "BROU caja de ahorro"');
   const goal = parseAmount($('a-goal').value);
-  const extra = { goal: (type === 'savings' || type === 'invest') && goal > 0 ? r2(goal) : '', goalDate: (type === 'savings' || type === 'invest') ? $('a-goal-date').value : '' };
+  const tna = parseAmount($('a-tna').value);
+  const extra = { tna: type !== 'cash' && tna > 0 ? tna : '', goal: (type === 'savings' || type === 'invest') && goal > 0 ? r2(goal) : '', goalDate: (type === 'savings' || type === 'invest') ? $('a-goal-date').value : '' };
   const a = account(S.editingAccountId);
   if (a) {
     const cur = accountBalance(a);
-    upsertAccount({ ...a, name, type, ...extra });
+    upsertAccount({ ...a, name, type, ...extra, yieldFrom: extra.tna && !a.tna ? isoDate(new Date()) : a.yieldFrom });
     if (!isNaN(bal) && r2(bal) !== cur) {
       upsertTransfer({ id: uid(), kind: 'adjust', from: '', to: a.id, amount: 0, toAmount: r2(bal - cur), cur: '', rate: '', date: isoDate(new Date()), note: '' });
     }
@@ -1258,6 +1294,43 @@ function openAdjust(id) {
   const t = S.transfers.find((x) => x.id === id);
   if (!t) return;
   if (confirm(`${transferTitle(t)}: ${t.toAmount < 0 ? '-' : '+'}${fmtCur(Math.abs(t.toAmount), accCur(account(t.to)))}.\n¿Eliminar este ajuste?`)) { deleteTransfer(id); toast('Ajuste eliminado'); }
+}
+
+
+// ---------- Hoja de rendimiento ----------
+function openYield(id) {
+  const a = account(id); if (!a) return;
+  S.yieldAcc = id;
+  const { est, days, bal } = yieldEstimate(a);
+  $('y-title').textContent = a.name;
+  $('y-period').textContent = days ? `Desde el ${new Date(parseLocal(yieldFrom(a))).toLocaleDateString('es-UY', { day: 'numeric', month: 'long' })} (${plural(days, 'día')}) · saldo registrado ${fmtCur(bal, accCur(a))}`
+    : `Saldo registrado ${fmtCur(bal, accCur(a))}`;
+  $('y-tna').value = a.tna ? numStr(a.tna) : '';
+  $('y-balance').value = numStr(r2(bal + est));
+  $('y-est-btn').hidden = !est;
+  updateYield();
+  $('ysheet').showModal();
+}
+function updateYield() {
+  const a = account(S.yieldAcc); if (!a) return;
+  const v = parseAmount($('y-balance').value), d = isNaN(v) ? 0 : r2(v - accountBalance(a));
+  $('y-diff').textContent = `${d < 0 ? '-' : '+'}${fmtCur(Math.abs(d), accCur(a))}`;
+  $('y-diff').className = 'val ' + (d < 0 ? 'danger' : d > 0 ? 'income' : '');
+}
+function saveYield() {
+  const a = account(S.yieldAcc); if (!a) return;
+  const v = parseAmount($('y-balance').value);
+  if (isNaN(v)) return toast('Escribí el saldo que ves en la cuenta');
+  const tna = parseAmount($('y-tna').value);
+  const d = r2(v - accountBalance(a)), today = isoDate(new Date()), cur = accCur(a);
+  if (d) {
+    upsertExpense({ id: uid(), type: d > 0 ? 'income' : 'expense', amount: Math.abs(d), category: d > 0 ? 'Rendimientos' : 'Otros', date: today,
+      note: `${d > 0 ? 'Rendimiento' : 'Pérdida'} ${a.name}`.slice(0, 80), method: a.id, installments: 1,
+      currency: cur, rate: cur === USD ? S.cfg.usdRate || '' : '', source: 'yield' });
+  }
+  upsertAccount({ ...a, tna: tna > 0 ? tna : '', yieldFrom: today });
+  $('ysheet').close(); $('asheet').close(); render();
+  toast(d > 0 ? `Rendimiento de ${fmtCur(d, cur)} registrado` : d < 0 ? 'Saldo actualizado' : 'Sin cambios en el saldo');
 }
 
 // ---------- Hoja de transferencia ----------
@@ -1663,6 +1736,12 @@ document.addEventListener('click', (ev) => {
     'new-account': () => openAccount(),
     'edit-account': () => openAccount(el.dataset.id),
     'close-asheet': () => $('asheet').close(),
+    'open-yield': () => openYield(S.editingAccountId),
+    'close-ysheet': () => $('ysheet').close(),
+    'save-yield': saveYield,
+    'save-name': () => saveName($('n-name').value),
+    'skip-name': () => saveName(''),
+    'yield-estimate': () => { const a = account(S.yieldAcc); const tna = parseAmount($('y-tna').value); const { est, bal } = yieldEstimate(a, tna); $('y-balance').value = numStr(r2(bal + est)); updateYield(); },
     'save-account': saveAccount,
     'delete-account': () => {
       const id = S.editingAccountId;
@@ -1753,9 +1832,11 @@ document.addEventListener('input', (ev) => {
   if (ev.target.id === 'f-amount' || ev.target.id === 'f-rate') updateRec();
   if (['t-amount', 't-rate'].includes(ev.target.id)) updateTransfer();
   if (['p-amount', 'p-rate'].includes(ev.target.id)) updatePay();
+  if (ev.target.id === 'y-balance') updateYield();
 });
 document.addEventListener('change', (ev) => {
   if (ev.target.id === 'cfg-currency') { S.cfg.currency = ev.target.value; S.cfg.usdRate = 0; S.cfg.rateDate = ''; persist(); setMoney(); render(); fetchRate(); }
+  if (ev.target.id === 'cfg-nickname') { S.cfg.nickname = ev.target.value.trim().slice(0, 24); S.cfg.askedName = true; persist(); toast(S.cfg.nickname ? 'Nombre guardado' : 'Nombre borrado'); }
   if (ev.target.id === 'cfg-rate') {
     const r = parseAmount(ev.target.value);
     if (r > 0) { S.cfg.usdRate = r2(r); S.cfg.rateManual = true; S.cfg.rateDate = new Date().toISOString(); persist(); render(); toast('Cotización guardada'); }
@@ -1767,7 +1848,7 @@ document.addEventListener('change', (ev) => {
   if (ev.target.id === 'a-type') updateAccountForm();
   if (['f-rec', 'f-end-mode', 'f-end', 'f-date'].includes(ev.target.id)) updateRec();
 });
-['sheet', 'bsheet', 'csheet', 'asheet', 'tsheet', 'psheet', 'rsheet', 'isheet'].forEach((id) => $(id).addEventListener('click', (ev) => { if (ev.target.id === id) ev.target.close(); }));
+['sheet', 'bsheet', 'csheet', 'asheet', 'tsheet', 'psheet', 'rsheet', 'isheet', 'ysheet', 'nsheet'].forEach((id) => $(id).addEventListener('click', (ev) => { if (ev.target.id === id) ev.target.close(); }));
 $('f-amount').addEventListener('keydown', (ev) => { if (ev.key === 'Enter') saveExpense(); });
 
 if ('serviceWorker' in navigator) {
@@ -1833,5 +1914,8 @@ async function boot() {
   show('home');
   if (rateStale()) fetchRate();
   cleanReceipts();
+  if (!S.cfg.askedName) setTimeout(askName, 400);
 }
+$('nsheet').addEventListener('close', () => { if (!S.cfg.askedName) { S.cfg.askedName = true; persist(); } });
+$('n-name').addEventListener('keydown', (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); saveName($('n-name').value); } });
 boot();
