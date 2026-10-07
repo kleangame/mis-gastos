@@ -9,9 +9,10 @@ const SHEET_PRESUPUESTOS = 'Presupuestos';
 const SHEET_TARJETAS = 'Tarjetas';
 const SHEET_FIJOS = 'Fijos';
 // 'Gastos' guarda todos los movimientos: gastos e ingresos. medio = 'cash' o el id de la tarjeta.
-const H_GASTOS = ['id', 'fecha', 'monto', 'categoria', 'nota', 'actualizado', 'tipo', 'medio', 'cuotas', 'tarjeta'];
+// moneda vacía = moneda principal de la app; 'USD' = cargado en dólares (monto en USD, cotizacion = moneda local por 1 US$).
+const H_GASTOS = ['id', 'fecha', 'monto', 'categoria', 'nota', 'actualizado', 'tipo', 'medio', 'cuotas', 'tarjeta', 'moneda', 'cotizacion'];
 // Fijos: inicio y fin en formato AAAA-MM; fin vacío = para siempre.
-const H_FIJOS = ['id', 'tipo', 'monto', 'categoria', 'nota', 'medio', 'dia', 'inicio', 'fin', 'actualizado'];
+const H_FIJOS = ['id', 'tipo', 'monto', 'categoria', 'nota', 'medio', 'dia', 'inicio', 'fin', 'actualizado', 'moneda'];
 const H_TARJETAS = ['id', 'nombre', 'limite', 'dia_cierre', 'actualizado'];
 const H_PRESUPUESTOS = ['categoria', 'monto'];
 
@@ -53,7 +54,8 @@ function upsertExpense(x) {
   const sh = sheet(SHEET_GASTOS, H_GASTOS);
   const cardName = x.method && x.method !== 'cash' ? (findCardName(x.method) || '') : '';
   const row = [String(x.id), x.date, Number(x.amount), x.category, x.note || '', x.updated || new Date().toISOString(),
-    x.type === 'income' ? 'ingreso' : 'gasto', x.method || 'cash', Number(x.installments) || 1, cardName];
+    x.type === 'income' ? 'ingreso' : 'gasto', x.method || 'cash', Number(x.installments) || 1, cardName,
+    x.currency || '', Number(x.rate) || ''];
   const r = findRow(sh, String(x.id));
   if (r) sh.getRange(r, 1, 1, row.length).setValues([row]);
   else sh.appendRow(row);
@@ -73,7 +75,7 @@ function upsertRecurring(r) {
   const sh = sheet(SHEET_FIJOS, H_FIJOS);
   // Prefijo ' para que Sheets no convierta "2026-04" en fecha.
   const row = [String(r.id), r.type === 'income' ? 'ingreso' : 'gasto', Number(r.amount), r.category, r.note || '',
-    r.method || 'cash', Number(r.day) || 1, "'" + r.start, r.end ? "'" + r.end : '', r.updated || new Date().toISOString()];
+    r.method || 'cash', Number(r.day) || 1, "'" + r.start, r.end ? "'" + r.end : '', r.updated || new Date().toISOString(), r.currency || ''];
   const i = findRow(sh, String(r.id));
   if (i) sh.getRange(i, 1, 1, row.length).setValues([row]);
   else sh.appendRow(row);
@@ -88,7 +90,7 @@ function readRecurring() {
     .filter(r => r[0] !== '')
     .map(r => ({ id: String(r[0]), type: r[1] === 'ingreso' ? 'income' : 'expense', amount: Number(r[2]), category: String(r[3]),
       note: String(r[4] || ''), method: String(r[5] || 'cash'), day: Number(r[6]) || 1, start: ym(r[7]), end: ym(r[8]),
-      updated: r[9] instanceof Date ? r[9].toISOString() : String(r[9] || '') }));
+      updated: r[9] instanceof Date ? r[9].toISOString() : String(r[9] || ''), currency: String(r[10] || '') }));
 }
 
 function upsertCard(c) {
@@ -132,6 +134,8 @@ function readExpenses() {
       type: r[6] === 'ingreso' ? 'income' : 'expense',
       method: String(r[7] || 'cash'),
       installments: Number(r[8]) || 1,
+      currency: String(r[10] || ''),
+      rate: Number(r[11]) || '',
     }));
 }
 

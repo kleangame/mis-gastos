@@ -39,11 +39,11 @@ const S = {
   cards:    store.get('mg.cards', []),
   recurring: store.get('mg.recurring', []), // gastos/ingresos fijos mensuales
   queue:    store.get('mg.queue', []),
-  cfg:      store.get('mg.cfg', { url: '', token: '', currency: 'UYU' }),
+  cfg:      { usdRate: 0, rateDate: '', ...store.get('mg.cfg', { url: '', token: '', currency: 'UYU' }) },
   lastSync: store.get('mg.lastSync', null),
   syncError: null, syncing: false,
   view: 'home', offset: 0, query: '', catFilter: 'Todas',
-  editingId: null, selCat: CATS[0].name, selType: 'expense', budgetCat: null, editingCardId: null,
+  editingId: null, selCat: CATS[0].name, selType: 'expense', selCur: '', budgetCat: null, editingCardId: null,
 };
 function persist() {
   store.set('mg.expenses', S.expenses); store.set('mg.budgets', S.budgets); store.set('mg.cards', S.cards); store.set('mg.recurring', S.recurring);
@@ -67,6 +67,30 @@ function setMoney() {
   document.querySelectorAll('#cur-symbol, .cur-symbol-b').forEach((el) => (el.textContent = sym));
 }
 const fmt = (n) => money.format(n || 0);
+// ---------- Dólares ----------
+// Un movimiento puede cargarse en USD. Guarda la cotización del día en que se cargó (rate),
+// así el historial no cambia cuando se mueve el dólar. Los fijos en USD usan la cotización actual.
+const USD = 'USD';
+const usdMode = () => S.cfg.currency !== USD;            // si la moneda principal ya es USD, no hace falta
+const isUSD = (e) => e.currency === USD && usdMode();
+const rateOf = (e) => Number(e.rate) || Number(S.cfg.usdRate) || 0;
+const baseAmount = (e) => isUSD(e) ? r2(Number(e.amount) * rateOf(e)) : Number(e.amount);
+const usdFmt = new Intl.NumberFormat('es-UY', { style: 'currency', currency: 'USD', currencyDisplay: 'symbol', maximumFractionDigits: 2 });
+const fmtUSD = (n) => usdFmt.format(n || 0).replace(/^USD\s?/, 'US$ ');
+const rateLabel = (r) => new Intl.NumberFormat('es-UY', { maximumFractionDigits: 2 }).format(r);
+async function fetchRate(manual = false) {
+  if (!usdMode()) return;
+  try {
+    const res = await fetch('https://open.er-api.com/v6/latest/USD');
+    const data = await res.json();
+    const r = data && data.rates && data.rates[S.cfg.currency];
+    if (!r) throw new Error('sin cotización');
+    S.cfg.usdRate = r2(r); S.cfg.rateDate = new Date().toISOString(); S.cfg.rateManual = false;
+    persist(); if (S.view === 'settings' || manual) render();
+    if (manual) toast(`Dólar actualizado: ${rateLabel(S.cfg.usdRate)}`);
+  } catch (err) { if (manual) toast('No se pudo obtener la cotización'); }
+}
+const rateStale = () => !S.cfg.usdRate || (!S.cfg.rateManual && Date.now() - new Date(S.cfg.rateDate || 0).getTime() > 6 * 3600e3);
 const compact = (n) => new Intl.NumberFormat('es-UY', { style: 'currency', currency: S.cfg.currency, notation: 'compact', maximumFractionDigits: 1 }).format(n);
 const parseAmount = (s) => {
   s = String(s).trim().replace(/\s/g, '');
@@ -103,8 +127,8 @@ function firstInstallmentKey(e) {
   return monthKey(d) + shift;
 }
 function installmentAmount(e, k) {
-  const n = nInst(e), base = r2(Number(e.amount) / n);
-  return k === n - 1 ? r2(Number(e.amount) - base * (n - 1)) : base;
+  const n = nInst(e), total = baseAmount(e), base = r2(total / n);
+  return k === n - 1 ? r2(total - base * (n - 1)) : base;
 }
 // Lo que impacta en un mes: cada cuota es una entrada virtual que apunta al movimiento original.
 function entriesForMonth(key) {
@@ -112,7 +136,7 @@ function entriesForMonth(key) {
   for (const e of S.expenses) {
     const n = nInst(e);
     if (n === 1 && !(e.method && e.method !== CASH && !isIncome(e))) {
-      if (monthKey(parseLocal(e.date)) === key) out.push({ ...e, src: e, k: 0, n: 1, value: Number(e.amount) });
+      if (monthKey(parseLocal(e.date)) === key) out.push({ ...e, src: e, k: 0, n: 1, value: baseAmount(e) });
       continue;
     }
     const first = firstInstallmentKey(e);
@@ -126,7 +150,7 @@ function entriesForMonth(key) {
     }
   }
   for (const r of S.recurring) {
-    if (ruleActive(r, key)) out.push({ ...r, src: r, fixed: true, k: 0, n: 1, value: Number(r.amount), date: ruleDate(r, key), updated: '' });
+    if (ruleActive(r, key)) out.push({ ...r, src: r, fixed: true, k: 0, n: 1, value: baseAmount(r), date: ruleDate(r, key), updated: '' });
   }
   return out;
 }
@@ -161,7 +185,7 @@ function cardStats(c) {
   }
   for (const r of S.recurring) {
     if (isIncome(r) || r.method !== c.id) continue;
-    const v = Number(r.amount);
+    const v = baseAmount(r);
     if (ruleActive(r, now)) { outstanding += v; thisMonth += v; }
     for (let i = 0; i < 6; i++) if (ruleActive(r, now + i)) future[i] += v;
     if (ruleActive(r, now) || ymKey(r.start) > now) plans.push({ e: r, fixed: true, rem: ruleActive(r, now) ? v : 0, cuota: v });
@@ -200,7 +224,7 @@ const header = (title, action = 'new-expense') => `
 function entryRow(x) {
   const c = cat(x.category), inc = isIncome(x);
   const cd = !inc && x.method && x.method !== CASH ? card(x.method) : null;
-  const sub = [x.fixed ? 'Fijo' : null, x.note ? x.category : null, cd ? cd.name : null, x.n > 1 ? `cuota ${x.k + 1}/${x.n}` : null].filter(Boolean).join(' · ') || dayLabel(x.date);
+  const sub = [x.fixed ? 'Fijo' : null, x.note ? x.category : null, cd ? cd.name : null, x.n > 1 ? `cuota ${x.k + 1}/${x.n}` : null, isUSD(x) ? (x.n > 1 ? fmtUSD(r2(x.amount / x.n)) : fmtUSD(x.amount)) : null].filter(Boolean).join(' · ') || dayLabel(x.date);
   return `<button class="row with-icon" data-action="edit-expense" data-id="${esc(x.id)}">
     ${icon(c)}
     <span class="ri"><b>${esc(x.note || x.category)}</b><small>${esc(sub)}</small></span>
@@ -362,15 +386,15 @@ function renderCards() {
 
 function fixedSection() {
   const key = nowKey() + S.offset;
-  const rules = [...S.recurring].sort((a, b) => (isIncome(a) - isIncome(b)) || b.amount - a.amount);
-  const net = rules.filter((r) => ruleActive(r, key)).reduce((s, r) => s + (isIncome(r) ? 1 : -1) * Number(r.amount), 0);
+  const rules = [...S.recurring].sort((a, b) => (isIncome(a) - isIncome(b)) || baseAmount(b) - baseAmount(a));
+  const net = rules.filter((r) => ruleActive(r, key)).reduce((s, r) => s + (isIncome(r) ? 1 : -1) * baseAmount(r), 0);
   return `<div class="section-h"><span>Fijos mensuales</span><button data-action="new-fixed">Agregar</button></div>
     ${rules.length ? `<div class="group">${rules.map((r) => {
       const on = ruleActive(r, key), cd = r.method && r.method !== CASH ? card(r.method) : null;
       return `<button class="row with-icon" data-action="edit-expense" data-id="${esc(r.id)}" style="${on ? '' : 'opacity:.5'}">
         ${icon(cat(r.category))}
-        <span class="ri"><b>${esc(r.note || r.category)}</b><small>${esc(ruleRange(r))}${cd ? ' · ' + esc(cd.name) : ''} · día ${r.day}</small></span>
-        <span class="amt ${isIncome(r) ? 'income' : ''}">${isIncome(r) ? '+' : '-'}${fmt(r.amount)}</span>
+        <span class="ri"><b>${esc(r.note || r.category)}</b><small>${esc(ruleRange(r))}${cd ? ' · ' + esc(cd.name) : ''} · día ${r.day}${isUSD(r) ? ' · ' + fmtUSD(r.amount) : ''}</small></span>
+        <span class="amt ${isIncome(r) ? 'income' : ''}">${isIncome(r) ? '+' : '-'}${fmt(baseAmount(r))}</span>
       </button>`;
     }).join('')}</div>
     <p class="footer-note">Neto fijo de ${MONTHS[key % 12]}: ${net < 0 ? '-' : '+'}${fmt(Math.abs(net))}. Los atenuados no corren este mes.</p>`
@@ -433,7 +457,10 @@ function renderSettings() {
       <label class="row"><span>Moneda</span>
         <select id="cfg-currency">${CURRENCIES.map((c) => `<option ${c === S.cfg.currency ? 'selected' : ''}>${c}</option>`).join('')}</select>
       </label>
+      ${usdMode() ? `<label class="row"><span>Dólar (1 US$)</span><input id="cfg-rate" inputmode="decimal" placeholder="Cotización" value="${S.cfg.usdRate ? String(S.cfg.usdRate).replace('.', ',') : ''}"></label>
+      <button class="row blue" data-action="refresh-rate">Actualizar cotización<span class="val">${S.cfg.rateDate ? (S.cfg.rateManual ? 'manual' : new Date(S.cfg.rateDate).toLocaleString('es-UY', { day: 'numeric', month: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false })) : ''}</span></button>` : ''}
     </div>
+    ${usdMode() ? `<p class="footer-note">Podés cargar movimientos en dólares. Se convierten a ${esc(S.cfg.currency)} con la cotización del día en que los cargás; los fijos en dólares usan la cotización actual.</p>` : ''}
     <div class="section-h"><span>Datos</span></div>
     <div class="group">
       <button class="row blue" data-action="export">Exportar CSV<span></span></button>
@@ -547,6 +574,9 @@ function openExpense(id = null, fixed = false) {
   const cats = S.selType === 'income' ? INCOME_CATS : CATS;
   S.selCat = e ? e.category : (cats.some((c) => c.name === S.catFilter) ? S.catFilter : cats[0].name);
   $('f-amount').value = e ? String(e.amount).replace('.', ',') : '';
+  S.selCur = e && isUSD(e) ? USD : '';
+  $('f-rate').value = e && isUSD(e) && e.rate ? String(e.rate).replace('.', ',') : (S.cfg.usdRate ? String(S.cfg.usdRate).replace('.', ',') : '');
+  if (rateStale()) fetchRate().then(() => { if (!$('f-rate').value && S.cfg.usdRate) { $('f-rate').value = String(S.cfg.usdRate).replace('.', ','); updateCur(); } });
   $('f-date').value = rule ? ruleDate(rule, ymKey(rule.start)) : e ? e.date : isoDate(new Date());
   $('f-rec').checked = rule ? true : fixed;
   $('f-end-mode').value = rule && rule.end ? 'date' : '';
@@ -569,7 +599,21 @@ function applyType() {
   const cats = inc ? INCOME_CATS : CATS;
   if (!cats.some((c) => c.name === S.selCat)) S.selCat = cats[0].name;
   $('f-pay-group').hidden = inc;
-  renderCatGrid(); updateInstHint(); updateRec();
+  renderCatGrid(); updateCur(); updateRec();
+}
+function updateCur() {
+  const usd = S.selCur === USD, fixed = $('f-rec').checked;
+  $('f-cur').hidden = !usdMode();
+  document.querySelectorAll('#f-cur button').forEach((b) => b.classList.toggle('on', (b.dataset.cur === USD) === usd));
+  $('f-cur-local').textContent = S.cfg.currency;
+  $('cur-symbol').textContent = usd ? 'US$' : (money.formatToParts(0).find((p) => p.type === 'currency')?.value || '$');
+  $('f-rate-group').hidden = !usd || fixed;
+  const amount = parseAmount($('f-amount').value);
+  const rate = fixed ? Number(S.cfg.usdRate) : parseAmount($('f-rate').value);
+  $('f-usd-hint').hidden = !usd;
+  if (usd) $('f-usd-hint').textContent = !(rate > 0) ? 'Poné la cotización del dólar para convertirlo.'
+    : (amount > 0 ? `≈ ${fmt(r2(amount * rate))} a ${rateLabel(rate)} por dólar.` : `Cotización: ${rateLabel(rate)} por dólar.`)
+      + (fixed ? ' Cada mes se convierte con la cotización actual.' : '');
 }
 function renderCatGrid() {
   const cats = S.selType === 'income' ? INCOME_CATS : CATS;
@@ -585,7 +629,7 @@ function updateRec() {
     const d = parseLocal($('f-date').value);   // sugerencia: un año después
     $('f-end').value = `${d.getFullYear() + 1}-${String(d.getMonth() + 1).padStart(2, '0')}`;
   }
-  const amount = parseAmount($('f-amount').value);
+  const amount = formBaseAmount();
   const show = rec && $('f-date').value;
   $('f-rec-hint').hidden = !show;
   if (show) {
@@ -596,12 +640,17 @@ function updateRec() {
       : `Se registra el día ${d.getDate()} de cada mes, desde ${keyLabel(start).toLowerCase()}` +
         (months ? ` hasta ${keyLabel(end).toLowerCase()} (${months} ${months === 1 ? 'mes' : 'meses'}${amount > 0 ? ', ' + fmt(amount * months) + ' en total' : ''}).` : ', sin fecha de fin.');
   }
-  updateInstHint();
+  updateCur(); updateInstHint();
+}
+function formBaseAmount() {
+  const a = parseAmount($('f-amount').value);
+  if (S.selCur !== USD) return a;
+  return a * ($('f-rec').checked ? Number(S.cfg.usdRate) : parseAmount($('f-rate').value));
 }
 function updateInstHint() {
   const isCard = S.selType === 'expense' && $('f-method').value !== CASH && !$('f-rec').checked;
   $('f-inst-row').hidden = !isCard;
-  const n = Number($('f-inst').value) || 1, amount = parseAmount($('f-amount').value);
+  const n = Number($('f-inst').value) || 1, amount = formBaseAmount();
   const show = isCard && n > 1 && amount > 0;
   $('f-inst-hint').hidden = !show;
   if (show) $('f-inst-hint').textContent = `${n} cuotas de ${fmt(r2(amount / n))}. Se reparten mes a mes en tu balance y en la tarjeta.`;
@@ -614,6 +663,11 @@ function saveExpense() {
   const method = inc ? CASH : $('f-method').value;
   const installments = method === CASH ? 1 : Number($('f-inst').value) || 1;
   const wasEditing = !!S.editingId;
+  const usd = S.selCur === USD && usdMode();
+  const rate = usd ? parseAmount($('f-rate').value) : 0;
+  if (usd && $('f-rec').checked && !(Number(S.cfg.usdRate) > 0)) return toast('Definí la cotización del dólar en Ajustes');
+  if (usd && !$('f-rec').checked && !(rate > 0)) { $('f-rate').focus(); return toast('Ingresá la cotización del dólar'); }
+  const cur = usd ? { currency: USD } : { currency: '' };
   if ($('f-rec').checked) {
     const d = parseLocal(date);
     const start = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
@@ -621,13 +675,13 @@ function saveExpense() {
     if (end && ymKey(end) < ymKey(start)) return toast('El último mes no puede ser anterior al primero');
     if (S.editingId && !S.editingRule) deleteExpense(S.editingId);   // un gasto común pasó a fijo
     upsertRecurring({ id: S.editingRule ? S.editingId : uid(), type: S.selType, amount: r2(amount), category: S.selCat,
-      note: $('f-note').value.trim(), method, day: d.getDate(), start, end });
+      note: $('f-note').value.trim(), method, day: d.getDate(), start, end, ...cur, rate: '' });
     $('sheet').close(); render();
     return toast(wasEditing ? 'Fijo actualizado' : 'Fijo mensual guardado');
   }
   if (S.editingRule) deleteRecurring(S.editingId);   // un fijo pasó a gasto común
   upsertExpense({ id: S.editingId || uid(), type: S.selType, amount: r2(amount), category: S.selCat, date,
-    note: $('f-note').value.trim(), method, installments });
+    note: $('f-note').value.trim(), method, installments, ...cur, rate: usd ? r2(rate) : '' });
   $('sheet').close();
   const d = parseLocal(date);
   S.offset = Math.min(0, monthKey(d) - nowKey());
@@ -666,9 +720,10 @@ function saveCard() {
 }
 
 function exportCSV() {
-  const rows = [['id', 'tipo', 'fecha', 'monto', 'categoria', 'nota', 'medio', 'cuotas']]
-    .concat([...S.expenses].sort(sortDesc).map((e) => [e.id, isIncome(e) ? 'ingreso' : 'gasto', e.date, e.amount, e.category, e.note || '',
-      e.method && e.method !== CASH ? (card(e.method)?.name || 'tarjeta') : 'efectivo', nInst(e)]));
+  const rows = [['id', 'tipo', 'fecha', `monto ${S.cfg.currency}`, 'categoria', 'nota', 'medio', 'cuotas', 'moneda original', 'monto original', 'cotizacion']]
+    .concat([...S.expenses].sort(sortDesc).map((e) => [e.id, isIncome(e) ? 'ingreso' : 'gasto', e.date, baseAmount(e), e.category, e.note || '',
+      e.method && e.method !== CASH ? (card(e.method)?.name || 'tarjeta') : 'efectivo', nInst(e),
+      isUSD(e) ? USD : S.cfg.currency, e.amount, isUSD(e) ? rateOf(e) : '']));
   const csv = rows.map((r) => r.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\n');
   const a = document.createElement('a');
   a.href = URL.createObjectURL(new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8' }));
@@ -690,6 +745,8 @@ document.addEventListener('click', (ev) => {
     'edit-expense': () => openExpense(el.dataset.id),
     'close-sheet': () => $('sheet').close(),
     'set-type': () => { S.selType = el.dataset.type; applyType(); },
+    'set-cur': () => { S.selCur = el.dataset.cur; if (S.selCur === USD && !$('f-rate').value && S.cfg.usdRate) $('f-rate').value = String(S.cfg.usdRate).replace('.', ','); updateRec(); },
+    'refresh-rate': () => fetchRate(true),
     'pick-cat': () => { S.selCat = el.dataset.cat; renderCatGrid(); },
     'save-expense': saveExpense,
     'delete-expense': () => {
@@ -741,10 +798,14 @@ document.addEventListener('input', (ev) => {
     renderList();
     const s = $('search'); s.focus(); s.setSelectionRange(pos, pos);
   }
-  if (ev.target.id === 'f-amount') updateRec();
+  if (ev.target.id === 'f-amount' || ev.target.id === 'f-rate') updateRec();
 });
 document.addEventListener('change', (ev) => {
-  if (ev.target.id === 'cfg-currency') { S.cfg.currency = ev.target.value; persist(); setMoney(); }
+  if (ev.target.id === 'cfg-currency') { S.cfg.currency = ev.target.value; S.cfg.usdRate = 0; S.cfg.rateDate = ''; persist(); setMoney(); render(); fetchRate(); }
+  if (ev.target.id === 'cfg-rate') {
+    const r = parseAmount(ev.target.value);
+    if (r > 0) { S.cfg.usdRate = r2(r); S.cfg.rateManual = true; S.cfg.rateDate = new Date().toISOString(); persist(); render(); toast('Cotización guardada'); }
+  }
   if (ev.target.id === 'f-method' || ev.target.id === 'f-inst') updateInstHint();
   if (['f-rec', 'f-end-mode', 'f-end', 'f-date'].includes(ev.target.id)) updateRec();
 });
@@ -758,3 +819,4 @@ if ('serviceWorker' in navigator) window.addEventListener('load', () => navigato
 setMoney();
 show('home');
 sync();
+if (rateStale()) fetchRate();

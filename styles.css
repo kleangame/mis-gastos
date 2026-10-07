@@ -192,3 +192,6 @@ input, select { font: inherit; color: var(--label); }
 input[type=month] { text-align: right; }
 .tag { font-size: 11px; font-weight: 600; color: var(--blue); background: rgba(0,122,255,.12); padding: 1px 6px; border-radius: 6px; margin-left: 6px; vertical-align: 2px; }
 .row input.switch { width: 51px; min-width: 51px; max-width: 51px; flex: 0 0 51px; height: 31px; }
+
+.cur-seg { width: 160px; margin: -10px auto 10px; }
+#f-rate { text-align: right; }

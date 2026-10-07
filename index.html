@@ -61,6 +61,14 @@
       <span id="cur-symbol">$</span>
       <input id="f-amount" inputmode="decimal" placeholder="0" autocomplete="off">
     </div>
+    <div class="segmented cur-seg" id="f-cur">
+      <button type="button" data-action="set-cur" data-cur="" class="on" id="f-cur-local">UYU</button>
+      <button type="button" data-action="set-cur" data-cur="USD">USD</button>
+    </div>
+    <p class="hint sheet-hint" id="f-usd-hint" hidden></p>
+    <div class="group" id="f-rate-group" hidden>
+      <label class="row"><span>Cotización US$</span><input id="f-rate" inputmode="decimal" placeholder="0" autocomplete="off"></label>
+    </div>
     <div id="f-cats" class="cat-grid"></div>
     <div class="group" id="f-pay-group">
       <label class="row"><span>Medio de pago</span><select id="f-method"></select></label>
