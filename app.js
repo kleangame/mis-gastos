@@ -1,4 +1,4 @@
-// Mis Gastos — web app móvil estilo iOS, sincronizada con Google Sheets (Apps Script).
+// Mis Gastos — web app móvil estilo iOS. Los datos viven solo en el celular; copias cifradas opcionales.
 // Gastos, ingresos, balance, presupuestos y tarjetas de crédito con cuotas.
 // Funciona offline: guarda una copia local y una cola de cambios que se envía al reconectar.
 
@@ -27,11 +27,7 @@ const CARD_COLORS = [
 const CURRENCIES = ['UYU', 'USD', 'ARS', 'EUR', 'BRL', 'CLP', 'MXN', 'COP', 'PEN'];
 const MONTHS = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
 const CASH = 'cash';           // id de la cuenta Efectivo (también usado por datos de versiones anteriores)
-const APP_VERSION = '7.0.1';
-// Hoja plantilla con el script ya incluido (modo simple). /copy abre «Hacer una copia» en Google Sheets.
-// Script central de v6.2–6.3, ya apagado: si quedó conectado, se desconecta.
-const OLD_CENTRAL_URL = 'https://script.google.com/macros/s/AKfycbyoU8AzSSD3oflbJBEqjcdl-SK0ByHak7hqwezsMzZZLverdfsSfxwIfxt84mWirxRD2Q/exec';
-const TEMPLATE_URL = 'https://docs.google.com/spreadsheets/d/1SzK5xBkthlZ3HhRSYwWOv12acXDUh5jHQaxg7LRNZi4/copy';
+const APP_VERSION = '7.1.0';
 const ACC_TYPES = {
   cash:    { label: 'Efectivo',  emoji: '💵', color: '#34C759' },
   bank:    { label: 'Banco',     emoji: '🏦', color: '#007AFF' },
@@ -51,19 +47,15 @@ const S = {
   recurring: store.get('mg.recurring', []), // gastos/ingresos fijos mensuales
   accounts: store.get('mg.accounts', null),  // cuentas: banco, efectivo, ahorro, inversión
   transfers: store.get('mg.transfers', []),  // transferencias, pagos de tarjeta y ajustes de saldo
-  queue:    store.get('mg.queue', []),
   cfg:      { usdRate: 0, rateDate: '', ...store.get('mg.cfg', { url: '', token: '', currency: 'UYU' }) },
-  lastSync: store.get('mg.lastSync', null),
-  syncError: null, syncing: false,
   view: 'home', offset: 0, query: '', catFilter: 'Todas',
   editingId: null, selCat: CATS[0].name, selType: 'expense', selCur: '', budgetCat: null, editingCardId: null,
 };
 function persist() {
   store.set('mg.expenses', S.expenses); store.set('mg.budgets', S.budgets); store.set('mg.cards', S.cards); store.set('mg.recurring', S.recurring);
   store.set('mg.accounts', S.accounts); store.set('mg.transfers', S.transfers);
-  store.set('mg.queue', S.queue); store.set('mg.cfg', S.cfg); store.set('mg.lastSync', S.lastSync);
+  store.set('mg.cfg', S.cfg);
 }
-const connected = () => !!(S.cfg.url && S.cfg.token);
 
 // ---------- Utilidades ----------
 const $ = (id) => document.getElementById(id);
@@ -568,9 +560,6 @@ function renderBudgets() {
 }
 
 function renderSettings() {
-  const st = S.syncing ? ['busy', 'Sincronizando…'] : S.syncError ? ['err', 'Error: ' + S.syncError]
-    : connected() ? ['ok', S.lastSync ? 'Sincronizado ' + new Date(S.lastSync).toLocaleString('es-UY', { day: 'numeric', month: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }) : 'Conectado']
-    : ['', 'Solo en este dispositivo'];
   $('view-settings').innerHTML = `
     ${header('Ajustes', null)}
     <div class="section-h"><span>Copia de seguridad</span></div>
@@ -580,22 +569,6 @@ function renderSettings() {
     <button class="btn" data-action="backup">Guardar copia cifrada</button>
     <div class="group"><button class="row blue center" data-action="restore">Restaurar una copia</button></div>
     <p class="footer-note">Tus datos viven solo en este celular. La copia se cifra con tu contraseña antes de salir del teléfono y la guardás donde quieras: Drive, Dropbox, tu correo. Nadie más puede abrirla, ni nosotros. Si olvidás la contraseña, no hay forma de recuperarla.</p>
-    <details class="adv" ${connected() ? 'open' : ''}>
-      <summary>Sincronizar con tu propia hoja de Google (avanzado)</summary>
-      ${connected() ? `<div class="group">
-          <div class="row"><span>Estado</span><span class="val"><i class="status-dot ${st[0]}"></i>${esc(st[1])}</span></div>
-          ${S.queue.length ? `<div class="row"><span>Cambios pendientes</span><span class="val">${S.queue.length}</span></div>` : ''}
-        </div>
-        <button class="btn" data-action="sync-now" ${S.syncing ? 'disabled' : ''}>Sincronizar ahora</button>
-        <div class="group"><button class="row danger center" data-action="disconnect">Desconectar hoja</button></div>`
-      : `<p class="footer-note">Se configura desde una compu y la hoja es 100% tuya: <a href="${TEMPLATE_URL}" target="_blank" rel="noopener">copiá la plantilla</a>, implementá el script y usá el menú Mis Gastos → Conectar celular.</p>
-        <button class="link" data-action="paste-code">Pegar código de conexión</button>
-        <div class="group">
-          <label class="row"><span>URL del script</span><input id="cfg-url" type="url" placeholder="https://script.google.com/…" value="${esc(S.cfg.url)}"></label>
-          <label class="row"><span>Clave</span><input id="cfg-token" type="password" placeholder="Tu clave secreta" value="${esc(S.cfg.token)}"></label>
-        </div>
-        <button class="btn" data-action="connect">Conectar hoja</button>`}
-    </details>
     <div class="section-h"><span>General</span></div>
     <div class="group">
       <label class="row"><span>Moneda</span>
@@ -629,9 +602,9 @@ function show(view) {
 }
 
 // ---------- Cambios de datos ----------
-function enqueue(op) {
-  if (connected()) S.queue.push(op);
-  persist(); render(); sync();
+// Antes encolaba cambios para Google Sheets; ahora todo queda en el celular.
+function enqueue() {
+  persist(); render();
 }
 function upsertExpense(e) {
   e.updated = new Date().toISOString();
@@ -689,57 +662,6 @@ function deleteCard(id) {
   enqueue({ type: 'deleteCard', id });
 }
 
-// ---------- Sincronización con Google Sheets ----------
-async function api(body) {
-  // Sin headers personalizados: así es una "simple request" y Apps Script no exige preflight CORS.
-  const res = await fetch(S.cfg.url, { method: 'POST', body: JSON.stringify({ token: S.cfg.token, ...body }) });
-  if (!res.ok) throw new Error('HTTP ' + res.status);
-  const data = await res.json();
-  if (!data.ok) throw new Error(data.error || 'Respuesta inválida');
-  return data;
-}
-async function sync(manual = false) {
-  if (!connected() || S.syncing) return;
-  S.syncing = true; S.syncError = null; if (S.view === 'settings') render();
-  const ops = S.queue.slice();
-  try {
-    const data = await api({ action: 'sync', ops });
-    S.queue = S.queue.slice(ops.length);
-    if (!S.queue.length) {
-      S.expenses = data.expenses; S.budgets = data.budgets; S.cards = data.cards || []; S.recurring = data.recurring || [];
-      // Un script de una versión anterior no devuelve cuentas: se conservan las locales.
-      if (Array.isArray(data.accounts) && data.accounts.length) S.accounts = data.accounts;
-      if (Array.isArray(data.transfers)) S.transfers = data.transfers;
-      ensureCash();
-    }
-    S.lastSync = new Date().toISOString();
-    persist();
-    if (manual) toast('Sincronizado con Google Sheets');
-  } catch (err) {
-    S.syncError = navigator.onLine ? err.message : 'sin conexión';
-    if (manual) toast('No se pudo sincronizar: ' + S.syncError);
-  } finally {
-    S.syncing = false; render();
-  }
-  if (S.queue.length && !S.syncError) sync();
-}
-async function connect() { return connectWith($('cfg-url').value.trim(), $('cfg-token').value.trim()); }
-// Código de conexión que muestra la hoja: base64 (web-safe) de "url|clave".
-function decodeCode(code) {
-  try {
-    const b = code.trim().replace(/-/g, '+').replace(/_/g, '/');
-    const [url, token] = atob(b + '==='.slice((b.length + 3) % 4)).split('|');
-    return url && token ? { url, token } : null;
-  } catch (e) { return null; }
-}
-async function connectFromHash() {
-  const m = location.hash.match(/^#connect=([^&]+)&k=(.+)$/);
-  if (!m) return;
-  history.replaceState(null, '', location.pathname + location.search);
-  show('settings');
-  await connectWith(decodeURIComponent(m[1]), decodeURIComponent(m[2]));
-  if (connected()) toast('¡Listo! Tu app quedó conectada a tu hoja');
-}
 // ---------- Copia de seguridad cifrada ----------
 // AES-GCM 256 con clave derivada de la contraseña (PBKDF2-SHA256). Todo pasa en el celular.
 const KDF_ITER = 310000;
@@ -828,7 +750,6 @@ function restore() {
     S.accounts = d.accounts || null; S.transfers = d.transfers || [];
     if (d.cfg?.currency) { S.cfg.currency = d.cfg.currency; S.cfg.usdRate = d.cfg.usdRate || S.cfg.usdRate; }
     ensureCash(); S.cfg.setupPending = false; persist(); setMoney(); render();
-    if (connected()) { queueAll(); persist(); sync(true); }
     toast('Copia restaurada');
   };
   inp.click();
@@ -840,27 +761,6 @@ function ago(iso) {
 }
 const backupDue = () => S.expenses.length > 0 && !S.cfg.setupPending && (!S.cfg.lastBackup || Date.now() - new Date(S.cfg.lastBackup) > 7 * 864e5)
   && (!S.cfg.backupSnooze || Date.now() > new Date(S.cfg.backupSnooze));
-function queueAll() {
-  S.queue = [
-    ...S.cards.map((c) => ({ type: 'card', card: c })),
-    ...S.accounts.map((a) => ({ type: 'account', account: a })),
-    ...S.recurring.map((r) => ({ type: 'recurring', rule: r })),
-    ...S.transfers.map((t) => ({ type: 'transfer', transfer: t })),
-    ...S.expenses.map((e) => ({ type: 'upsert', expense: e })),
-    ...Object.entries(S.budgets).map(([category, amount]) => ({ type: 'budget', category, amount })),
-  ];
-}
-async function connectWith(url, token) {
-  if (!/^https:\/\/script\.google(usercontent)?\.com\//.test(url)) return toast('Pegá la URL de la app web de Apps Script');
-  if (!token) return toast('Ingresá la clave que pusiste en el script');
-  S.cfg.url = url; S.cfg.token = token;
-  // Sube lo que ya había en el teléfono (el servidor evita duplicados por id).
-  queueAll();
-  persist();
-  await sync(true);
-  if (S.syncError) { S.cfg.url = ''; S.cfg.token = ''; S.queue = []; persist(); render(); }
-}
-
 // ---------- Hoja de movimiento ----------
 function openExpense(id = null, fixed = false) {
   const rule = id ? S.recurring.find((x) => x.id === id) : null;
@@ -1291,29 +1191,14 @@ document.addEventListener('click', (ev) => {
         deleteCard(S.editingCardId); $('csheet').close();
       }
     },
-    'connect': connect,
-    'sync-now': () => sync(true),
-    'disconnect': () => {
-      if (confirm('¿Desconectar la hoja? Tus datos quedan en Google Sheets y en este teléfono.')) {
-        S.cfg.url = ''; S.cfg.token = ''; S.queue = []; S.syncError = null; persist(); render();
-      }
-    },
     'export': exportCSV,
     'backup': backup,
     'backup-later': () => { S.cfg.backupSnooze = new Date(Date.now() + 3 * 864e5).toISOString(); persist(); render(); },
     'restore': restore,
-    'paste-code': () => {
-      const code = prompt('Pegá el código que te mostró la hoja (Mis Gastos → Conectar celular):');
-      if (!code) return;
-      const c = decodeCode(code);
-      if (!c) return toast('Ese código no es válido');
-      connectWith(c.url, c.token).then(() => { if (connected()) toast('¡Listo! Tu app quedó conectada a tu hoja'); });
-    },
     'wipe': () => {
       if (confirm('¿Borrar todos los datos de este dispositivo?')) {
-        S.expenses = []; S.budgets = {}; S.cards = []; S.recurring = []; S.transfers = []; S.accounts = null; S.queue = [];
+        S.expenses = []; S.budgets = {}; S.cards = []; S.recurring = []; S.transfers = []; S.accounts = null;
         ensureCash(); persist(); render();
-        if (connected()) sync(true);
       }
     },
   };
@@ -1345,8 +1230,6 @@ document.addEventListener('change', (ev) => {
 ['sheet', 'bsheet', 'csheet', 'asheet', 'tsheet', 'psheet'].forEach((id) => $(id).addEventListener('click', (ev) => { if (ev.target.id === id) ev.target.close(); }));
 $('f-amount').addEventListener('keydown', (ev) => { if (ev.key === 'Enter') saveExpense(); });
 
-window.addEventListener('online', () => sync());
-document.addEventListener('visibilitychange', () => { if (!document.hidden) sync(); });
 if ('serviceWorker' in navigator) window.addEventListener('load', () => navigator.serviceWorker.register('sw.js'));
 
 // ---------- Migración a cuentas (v6) ----------
@@ -1357,23 +1240,21 @@ function ensureCash() {
 if (!Array.isArray(S.accounts)) {
   ensureCash();
   const now = new Date().toISOString();
-  S.cards.forEach((c) => { if (!c.since) { c.since = now; if (connected()) S.queue.push({ type: 'card', card: c }); } });
-  if (connected()) S.queue.push({ type: 'account', account: S.accounts[0] });
+  S.cards.forEach((c) => { if (!c.since) c.since = now; });
   S.cfg.setupPending = true;
   persist();
 }
 ensureCash();
 
-if (S.cfg.url === OLD_CENTRAL_URL) {
-  S.cfg.url = ''; S.cfg.token = ''; S.queue = []; S.syncError = null; delete S.cfg.sheetUrl; delete S.cfg.email; persist();
+// La sincronización con Google Sheets se retiró en v7.1: se limpia lo que haya quedado guardado.
+if (S.cfg.url || S.cfg.token) {
+  ['url', 'token', 'sheetUrl', 'email'].forEach((k) => delete S.cfg[k]); persist();
   setTimeout(() => toast('Ahora tus datos quedan solo en tu celular. Guardá copias cifradas desde Ajustes.'), 800);
 }
+['mg.queue', 'mg.lastSync'].forEach((k) => localStorage.removeItem(k));
 // Pide al navegador que no borre los datos por falta de espacio.
 if (navigator.storage?.persist) navigator.storage.persisted().then((p) => p || navigator.storage.persist());
 
 setMoney();
 show('home');
-connectFromHash();
-window.addEventListener('hashchange', connectFromHash);
-sync();
 if (rateStale()) fetchRate();
