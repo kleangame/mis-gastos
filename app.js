@@ -27,7 +27,7 @@ const CARD_COLORS = [
 const CURRENCIES = ['UYU', 'USD', 'ARS', 'EUR', 'BRL', 'CLP', 'MXN', 'COP', 'PEN'];
 const MONTHS = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
 const CASH = 'cash';           // id de la cuenta Efectivo (también usado por datos de versiones anteriores)
-const APP_VERSION = '7.0.0';
+const APP_VERSION = '7.0.1';
 // Hoja plantilla con el script ya incluido (modo simple). /copy abre «Hacer una copia» en Google Sheets.
 // Script central de v6.2–6.3, ya apagado: si quedó conectado, se desconecta.
 const OLD_CENTRAL_URL = 'https://script.google.com/macros/s/AKfycbyoU8AzSSD3oflbJBEqjcdl-SK0ByHak7hqwezsMzZZLverdfsSfxwIfxt84mWirxRD2Q/exec';
@@ -610,7 +610,7 @@ function renderSettings() {
       <button class="row blue" data-action="export">Exportar CSV<span></span></button>
       <button class="row danger" data-action="wipe">Borrar datos de este dispositivo</button>
     </div>
-    <p class="footer-note">${S.expenses.length} movimientos, ${S.recurring.length} fijos, ${S.accounts.length} cuentas y ${S.cards.length} tarjetas guardados. Si borrás los datos del celular, solo los recuperás con una copia.</p>
+    <p class="footer-note">${plural(S.expenses.length, 'movimiento')}, ${plural(S.recurring.length, 'fijo')}, ${plural(S.accounts.length, 'cuenta')} y ${plural(S.cards.length, 'tarjeta')} guardados. Si borrás los datos del celular, solo los recuperás con una copia.</p>
     <div class="section-h"><span>Acerca de</span></div>
     <div class="group">
       <div class="row"><span>Versión</span><span class="val" id="app-version">${APP_VERSION}</span></div>
@@ -833,6 +833,7 @@ function restore() {
   };
   inp.click();
 }
+const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
 function ago(iso) {
   const days = Math.floor((Date.now() - new Date(iso)) / 864e5);
   return days <= 0 ? 'Hoy' : days === 1 ? 'Ayer' : `Hace ${days} días`;
