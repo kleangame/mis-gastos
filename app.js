@@ -1,6 +1,6 @@
 // Mis Gastos — web app móvil estilo iOS. Los datos viven solo en el celular; copias cifradas opcionales.
 // Gastos, ingresos, balance, presupuestos y tarjetas de crédito con cuotas.
-// Funciona offline: guarda una copia local y una cola de cambios que se envía al reconectar.
+// Funciona offline. Datos en IndexedDB, cifrados si activás el bloqueo con PIN.
 
 const CATS = [
   { name: 'Comida',     emoji: '🍔', color: '#FF9500' },
@@ -27,7 +27,7 @@ const CARD_COLORS = [
 const CURRENCIES = ['UYU', 'USD', 'ARS', 'EUR', 'BRL', 'CLP', 'MXN', 'COP', 'PEN'];
 const MONTHS = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
 const CASH = 'cash';           // id de la cuenta Efectivo (también usado por datos de versiones anteriores)
-const APP_VERSION = '7.1.1';
+const APP_VERSION = '8.0.0';
 const ACC_TYPES = {
   cash:    { label: 'Efectivo',  emoji: '💵', color: '#34C759' },
   bank:    { label: 'Banco',     emoji: '🏦', color: '#007AFF' },
@@ -36,25 +36,117 @@ const ACC_TYPES = {
 };
 
 // ---------- Estado y almacenamiento ----------
-const store = {
+// Los datos viven en IndexedDB (más espacio y más estable que localStorage).
+// Con el bloqueo activado, se guardan cifrados con una clave que solo se abre con tu PIN o tu huella.
+const legacy = {   // localStorage: solo para migrar datos de versiones anteriores a la 8
   get(k, d) { try { const v = JSON.parse(localStorage.getItem(k)); return v ?? d; } catch { return d; } },
-  set(k, v) { localStorage.setItem(k, JSON.stringify(v)); },
+};
+const DATA_KEYS = ['expenses', 'budgets', 'cards', 'recurring', 'accounts', 'transfers'];
+const idb = {
+  db: null,
+  open() {
+    return this.db ||= new Promise((res, rej) => {
+      const r = indexedDB.open('mis-gastos', 1);
+      r.onupgradeneeded = () => { r.result.createObjectStore('kv'); r.result.createObjectStore('receipts'); };
+      r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
+    });
+  },
+  async run(store, mode, fn) {
+    const db = await this.open();
+    return new Promise((res, rej) => {
+      const t = db.transaction(store, mode); const req = fn(t.objectStore(store));
+      t.oncomplete = () => res(req ? req.result : undefined); t.onerror = t.onabort = () => rej(t.error);
+    });
+  },
+  get(store, k) { return this.run(store, 'readonly', (s) => s.get(k)); },
+  set(store, k, v) { return this.run(store, 'readwrite', (s) => s.put(v, k)); },
+  del(store, k) { return this.run(store, 'readwrite', (s) => s.delete(k)); },
+  keys(store) { return this.run(store, 'readonly', (s) => s.getAllKeys()); },
+  clear(store) { return this.run(store, 'readwrite', (s) => s.clear()); },
 };
 const S = {
-  expenses: store.get('mg.expenses', []),   // movimientos: gastos e ingresos
-  budgets:  store.get('mg.budgets', {}),
-  cards:    store.get('mg.cards', []),
-  recurring: store.get('mg.recurring', []), // gastos/ingresos fijos mensuales
-  accounts: store.get('mg.accounts', null),  // cuentas: banco, efectivo, ahorro, inversión
-  transfers: store.get('mg.transfers', []),  // transferencias, pagos de tarjeta y ajustes de saldo
-  cfg:      { usdRate: 0, rateDate: '', ...store.get('mg.cfg', { url: '', token: '', currency: 'UYU' }) },
+  expenses: [], budgets: {}, cards: [], recurring: [], accounts: null, transfers: [],
+  cfg: { usdRate: 0, rateDate: '', currency: 'UYU' },
+  receipts: new Set(),   // ids de movimientos con foto de recibo
   view: 'home', offset: 0, query: '', catFilter: 'Todas',
   editingId: null, selCat: CATS[0].name, selType: 'expense', selCur: '', budgetCat: null, editingCardId: null,
 };
+const dataObj = () => ({ ...Object.fromEntries(DATA_KEYS.map((k) => [k, S[k]])), cfg: S.cfg });
+let saveChain = Promise.resolve(), saveQueued = false;
 function persist() {
-  store.set('mg.expenses', S.expenses); store.set('mg.budgets', S.budgets); store.set('mg.cards', S.cards); store.set('mg.recurring', S.recurring);
-  store.set('mg.accounts', S.accounts); store.set('mg.transfers', S.transfers);
-  store.set('mg.cfg', S.cfg);
+  if (saveQueued) return saveChain;
+  saveQueued = true;
+  return (saveChain = saveChain.then(async () => {
+    saveQueued = false;
+    await idb.set('kv', 'data', await seal(dataObj()));
+  }).catch((e) => { console.error(e); toast('No se pudo guardar: ' + (e.message || e)); }));
+}
+
+// ---------- Cifrado local ----------
+// DEK: clave aleatoria que cifra los datos. Se guarda envuelta con el PIN (PBKDF2) y, si querés, con tu huella (WebAuthn PRF).
+let DEK = null, DEK_RAW = null;
+const PIN_ITER = 600000;
+const enc8 = (s) => new TextEncoder().encode(s);
+async function aesSeal(key, bytes) {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  return { iv: b64(iv), data: b64(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, bytes)) };
+}
+async function aesOpen(key, box) {
+  return new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: unb64(box.iv) }, key, unb64(box.data)));
+}
+const importAes = (raw) => crypto.subtle.importKey('raw', raw, 'AES-GCM', false, ['encrypt', 'decrypt']);
+async function seal(obj) {
+  return DEK ? { v: 1, enc: await aesSeal(DEK, enc8(JSON.stringify(obj))) } : { v: 1, plain: obj };
+}
+async function unseal(rec) {
+  if (!rec) return null;
+  if (rec.plain) return rec.plain;
+  return JSON.parse(new TextDecoder().decode(await aesOpen(DEK, rec.enc)));
+}
+async function pinKey(pin, salt, iter) {
+  const base = await crypto.subtle.importKey('raw', enc8(pin), 'PBKDF2', false, ['deriveKey']);
+  return crypto.subtle.deriveKey({ name: 'PBKDF2', salt, iterations: iter, hash: 'SHA-256' }, base, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+}
+async function prfKey(secret) {
+  const base = await crypto.subtle.importKey('raw', secret, 'HKDF', false, ['deriveKey']);
+  return crypto.subtle.deriveKey({ name: 'HKDF', hash: 'SHA-256', salt: new Uint8Array(32), info: enc8('mis-gastos-dek') }, base, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+}
+async function wrapWithPin(pin) {
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  return { salt: b64(salt), iter: PIN_ITER, ...(await aesSeal(await pinKey(pin, salt, PIN_ITER), DEK_RAW)) };
+}
+async function unlockWithPin(lock, pin) {
+  const raw = await aesOpen(await pinKey(pin, unb64(lock.pin.salt), lock.pin.iter), lock.pin);
+  DEK_RAW = raw; DEK = await importAes(raw);
+}
+const bioSupported = () => !!(window.PublicKeyCredential && navigator.credentials?.create);
+async function bioSecret(credId, prfSalt) {
+  const cred = await navigator.credentials.get({ publicKey: {
+    challenge: crypto.getRandomValues(new Uint8Array(32)), rpId: location.hostname, timeout: 60000,
+    allowCredentials: [{ type: 'public-key', id: credId }], userVerification: 'required',
+    extensions: { prf: { eval: { first: prfSalt } } },
+  } });
+  const out = cred.getClientExtensionResults()?.prf?.results?.first;
+  if (!out) throw new Error('prf');
+  return new Uint8Array(out);
+}
+async function unlockWithBio(lock) {
+  const secret = await bioSecret(unb64(lock.bio.credId), unb64(lock.bio.prfSalt));
+  const raw = await aesOpen(await prfKey(secret), lock.bio);
+  DEK_RAW = raw; DEK = await importAes(raw);
+}
+// Vuelve a guardar todo (datos, recibos, copia previa a restaurar) con la clave actual (o sin cifrar si no hay).
+async function resealAll(prevDEK) {
+  const cur = DEK;
+  const items = [];
+  for (const id of await idb.keys('receipts')) {
+    DEK = prevDEK; const blob = await getReceipt(id); DEK = cur;
+    if (blob) items.push([id, blob]);
+  }
+  DEK = prevDEK; const pre = await unseal(await idb.get('kv', 'preRestore')).catch(() => null); DEK = cur;
+  for (const [id, blob] of items) await putReceipt(id, blob);
+  if (pre) await idb.set('kv', 'preRestore', await seal(pre));
+  await persist();
 }
 
 // ---------- Utilidades ----------
@@ -263,9 +355,12 @@ function dayLabel(iso) {
   return new Intl.DateTimeFormat('es-UY', { weekday: 'long', day: 'numeric', month: 'long' }).format(d);
 }
 let toastTimer;
-function toast(msg) {
-  const t = $('toast'); t.textContent = msg; t.hidden = false;
-  clearTimeout(toastTimer); toastTimer = setTimeout(() => (t.hidden = true), 2600);
+function toast(msg, action = null) {
+  const t = $('toast');
+  t.innerHTML = `<span>${esc(msg)}</span>${action ? `<button type="button">${esc(action.label)}</button>` : ''}`;
+  if (action) t.querySelector('button').onclick = () => { t.hidden = true; action.fn(); };
+  t.hidden = false; t.classList.toggle('has-action', !!action);
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => (t.hidden = true), action ? 7000 : 2600);
 }
 const icon = (c) => `<span class="ci" style="background:${c.color}">${c.emoji}</span>`;
 const progressClass = (p) => (p > 1 ? 'over' : p > .8 ? 'warn' : '');
@@ -283,7 +378,7 @@ function entryRow(x) {
   const c = cat(x.category), inc = isIncome(x);
   const cd = !inc && isCardM(x.method) ? card(x.method) : null;
   const ac = !cd && S.accounts.length > 1 ? account(x.method) : null;
-  const sub = [x.fixed ? 'Fijo' : null, x.note ? x.category : null, cd ? cd.name : ac ? ac.name : null, x.n > 1 ? `cuota ${x.k + 1}/${x.n}` : null, isUSD(x) ? (x.n > 1 ? fmtUSD(r2(x.amount / x.n)) : fmtUSD(x.amount)) : null].filter(Boolean).join(' · ') || dayLabel(x.date);
+  const sub = [x.fixed ? 'Fijo' : null, x.note ? x.category : null, cd ? cd.name : ac ? ac.name : null, x.n > 1 ? `cuota ${x.k + 1}/${x.n}` : null, S.receipts.has(x.id) && !x.fixed ? '📎' : null, isUSD(x) ? (x.n > 1 ? fmtUSD(r2(x.amount / x.n)) : fmtUSD(x.amount)) : null].filter(Boolean).join(' · ') || dayLabel(x.date);
   return `<button class="row with-icon" data-action="edit-expense" data-id="${esc(x.id)}">
     ${icon(c)}
     <span class="ri"><b>${esc(x.note || x.category)}</b><small>${esc(sub)}</small></span>
@@ -306,6 +401,46 @@ function donutSVG(rows, total) {
   </svg>`;
 }
 
+
+// ---------- Alertas de presupuesto ----------
+function budgetUse(category, key) {
+  const b = Number(S.budgets[category] || 0);
+  if (!b) return null;
+  const spent = sumV(expensesOf(entriesForMonth(key)).filter((e) => e.category === category));
+  return { key, b, spent, p: spent / b };
+}
+function budgetAlertMsg(category, before, after) {
+  if (!after) return '';
+  if (after.p > 1 && before.p <= 1) return `⚠️ Te pasaste del presupuesto de ${category} por ${fmt(after.spent - after.b)}`;
+  if (after.p >= .8 && before.p < .8) return `⚠️ ${category} ya va por el ${Math.round(after.p * 100)}% del presupuesto`;
+  return '';
+}
+function budgetAlerts(key) {
+  return Object.keys(S.budgets).map((c) => ({ c, ...budgetUse(c, key) })).filter((x) => x.b && x.p >= .8).sort((a, b) => b.p - a.p);
+}
+
+// ---------- Gráfico de los últimos meses ----------
+function barsSVG(endKey) {
+  const months = Array.from({ length: 6 }, (_, i) => endKey - 5 + i).map((k) => {
+    const en = entriesForMonth(k);
+    return { k, spent: sumV(expensesOf(en)), earned: sumV(incomesOf(en)) };
+  });
+  const max = Math.max(1, ...months.flatMap((m) => [m.spent, m.earned]));
+  const W = 300, H = 130, base = 108, colW = W / 6, bw = 14;
+  const bars = months.map((m, i) => {
+    const x = i * colW + colW / 2, hs = (m.spent / max) * 92, he = (m.earned / max) * 92;
+    return `<g class="${m.k === endKey ? 'cur' : ''}" data-action="goto-month" data-off="${m.k - nowKey()}" style="cursor:pointer">
+      <rect x="${x - colW / 2}" y="0" width="${colW}" height="${H}" fill="transparent"/>
+      <rect x="${x - bw - 1}" y="${base - he}" width="${bw}" height="${Math.max(he, 1)}" rx="3" fill="var(--green)" opacity="${m.earned ? 1 : .25}"/>
+      <rect x="${x + 1}" y="${base - hs}" width="${bw}" height="${Math.max(hs, 1)}" rx="3" fill="var(--red)" opacity="${m.spent ? 1 : .25}"/>
+      <text x="${x}" y="${base + 16}" text-anchor="middle">${keyLabel(m.k, true)}</text>
+    </g>`;
+  }).join('');
+  const withData = months.filter((m) => m.spent);
+  const avg = withData.length ? sumV(withData.map((m) => ({ value: m.spent }))) / withData.length : 0;
+  return { svg: `<svg class="bars" viewBox="0 0 ${W} ${H}" role="img" aria-label="Ingresos y gastos de los últimos 6 meses">${bars}</svg>`, avg };
+}
+
 // ---------- Vistas ----------
 function renderHome() {
   const entries = monthEntries(S.offset).sort(sortDesc);
@@ -318,6 +453,7 @@ function renderHome() {
   const rows = byCategory(exp);
   const onCard = sumV(exp.filter((e) => isCardM(e.method)));
   const fixedSpent = sumV(exp.filter((e) => e.fixed));
+  const alerts = budgetAlerts(key), chart = barsSVG(key);
   let delta = '';
   if (prevSpent > 0) {
     const d = (spent - prevSpent) / prevSpent;
@@ -341,6 +477,10 @@ function renderHome() {
         <div class="meta"><span>${Math.round(pct * 100)}% del presupuesto</span>
           <span>${pct > 1 ? 'Excedido ' + fmt(spent - budgetTotal) : 'Quedan ' + fmt(budgetTotal - spent)}</span></div>` : ''}
     </div>
+    ${alerts.map((a) => `<button class="card alert ${a.p > 1 ? 'over' : ''}" data-action="edit-budget" data-cat="${esc(a.c)}" style="display:block;width:100%;text-align:left">
+      <b>${cat(a.c).emoji} ${esc(a.c)}: ${Math.round(a.p * 100)}% del presupuesto</b>
+      <p>${a.p > 1 ? `Te pasaste por ${fmt(a.spent - a.b)}.` : `Te quedan ${fmt(a.b - a.spent)} de ${fmt(a.b)}.`}</p>
+    </button>`).join('')}
     ${rows.length ? `
       <div class="section-h"><span>Gastos por categoría</span></div>
       <div class="card donut-wrap">
@@ -348,6 +488,12 @@ function renderHome() {
         <div class="legend">${rows.slice(0, 6).map(([n, v]) => `
           <div><i style="background:${cat(n).color}"></i><span>${n}</span><em>${v / spent < .01 ? '<1' : Math.round((v / spent) * 100)}%</em></div>`).join('')}
         </div>
+      </div>` : ''}
+    ${S.expenses.length || S.recurring.length ? `
+      <div class="section-h"><span>Últimos 6 meses</span></div>
+      <div class="card">${chart.svg}
+        <div class="meta" style="margin-top:6px"><span><i class="dot" style="background:var(--green)"></i>Ingresos <i class="dot" style="background:var(--red);margin-left:8px"></i>Gastos</span>
+        ${chart.avg ? `<span>Promedio ${fmt(chart.avg)}</span>` : ''}</div>
       </div>` : ''}
     ${entries.length ? `
       <div class="section-h"><span>Recientes</span><button data-tab="list">Ver todos</button></div>
@@ -569,6 +715,15 @@ function renderSettings() {
     <button class="btn" data-action="backup">Guardar copia cifrada</button>
     <div class="group"><button class="row blue center" data-action="restore">Restaurar una copia</button></div>
     <p class="footer-note">Tus datos viven solo en este celular. La copia se cifra con tu contraseña antes de salir del teléfono y la guardás donde quieras: Drive, Dropbox, tu correo. Nadie más puede abrirla, ni nosotros. Si olvidás la contraseña, no hay forma de recuperarla.</p>
+    <div class="section-h"><span>Seguridad</span></div>
+    <div class="group">
+      ${LOCK ? `<div class="row"><span>Bloqueo con PIN</span><span class="val">Activado</span></div>
+        <button class="row blue" data-action="lock-change">Cambiar PIN<span></span></button>
+        ${bioSupported() ? (LOCK.bio ? '<button class="row danger" data-action="bio-off">Dejar de usar la huella</button>' : '<button class="row blue" data-action="bio-on">Desbloquear con huella<span></span></button>') : ''}
+        <button class="row danger" data-action="lock-off">Desactivar bloqueo</button>`
+      : '<button class="row blue" data-action="lock-on">Activar bloqueo con PIN<span></span></button>'}
+    </div>
+    <p class="footer-note">${LOCK ? 'Tus datos y fotos están cifrados en este celular. La app se bloquea al abrirla y después de un minuto en segundo plano.' : 'Pide un PIN al abrir la app y guarda tus datos cifrados en el celular, para que nadie los vea aunque tenga tu teléfono.'}</p>
     <div class="section-h"><span>General</span></div>
     <div class="group">
       <label class="row"><span>Moneda</span>
@@ -580,7 +735,9 @@ function renderSettings() {
     ${usdMode() ? `<p class="footer-note">Podés cargar movimientos en dólares. Se convierten a ${esc(S.cfg.currency)} con la cotización del día en que los cargás; los fijos en dólares usan la cotización actual.</p>` : ''}
     <div class="section-h"><span>Datos</span></div>
     <div class="group">
+      <button class="row blue" data-action="import">Importar estado de cuenta (CSV)<span></span></button>
       <button class="row blue" data-action="export">Exportar CSV<span></span></button>
+      ${S.hasPreRestore ? '<button class="row blue" data-action="undo-restore">Volver a los datos de antes de restaurar<span></span></button>' : ''}
       <button class="row danger" data-action="wipe">Borrar datos de este dispositivo</button>
     </div>
     <p class="footer-note">${plural(S.expenses.length, 'movimiento')}, ${plural(S.recurring.length, 'fijo')}, ${plural(S.accounts.length, 'cuenta')} y ${plural(S.cards.length, 'tarjeta')} guardados. Si borrás los datos del celular, solo los recuperás con una copia.</p>
@@ -604,6 +761,7 @@ function show(view) {
 // ---------- Cambios de datos ----------
 // Antes encolaba cambios para Google Sheets; ahora todo queda en el celular.
 function enqueue() {
+  S.cfg.lastChange = new Date().toISOString();
   persist(); render();
 }
 function upsertExpense(e) {
@@ -662,6 +820,62 @@ function deleteCard(id) {
   enqueue({ type: 'deleteCard', id });
 }
 
+// ---------- Fotos de recibos ----------
+async function putReceipt(id, blob) {
+  const rec = DEK ? { type: blob.type, enc: await aesSeal(DEK, new Uint8Array(await blob.arrayBuffer())) } : { type: blob.type, blob };
+  await idb.set('receipts', id, rec); S.receipts.add(id);
+}
+async function getReceipt(id) {
+  const rec = await idb.get('receipts', id);
+  if (!rec) return null;
+  return rec.blob || new Blob([await aesOpen(DEK, rec.enc)], { type: rec.type });
+}
+async function delReceipt(id) { await idb.del('receipts', id); S.receipts.delete(id); }
+// Achica la foto (máx. 1280 px, JPEG) para que no ocupe tanto ni agrande las copias.
+async function shrinkImage(file) {
+  const img = await createImageBitmap(file);
+  const k = Math.min(1, 1280 / Math.max(img.width, img.height));
+  const c = document.createElement('canvas'); c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);
+  c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+  return new Promise((res) => c.toBlob(res, 'image/jpeg', 0.72));
+}
+const blobToB64 = async (blob) => b64(await blob.arrayBuffer());
+let receiptURL = null;
+function showReceiptPreview(blob) {
+  if (receiptURL) URL.revokeObjectURL(receiptURL);
+  receiptURL = blob ? URL.createObjectURL(blob) : null;
+  $('f-receipt-img').src = receiptURL || '';
+  $('f-receipt-prev').hidden = !blob; $('f-receipt-add').hidden = !!blob;
+}
+function pickReceipt() {
+  const inp = document.createElement('input');
+  inp.type = 'file'; inp.accept = 'image/*'; S.extAt = Date.now();
+  inp.onchange = async () => {
+    const f = inp.files[0]; if (!f) return;
+    try { S.pendingReceipt = await shrinkImage(f); showReceiptPreview(S.pendingReceipt); }
+    catch { toast('No se pudo abrir esa imagen'); }
+  };
+  inp.click();
+}
+function viewReceipt() {
+  if (!receiptURL) return;
+  $('r-img').src = receiptURL; $('rsheet').showModal();
+}
+// Borra fotos de movimientos que ya no existen (se hace al abrir, así «Deshacer» puede recuperarlas en la sesión).
+async function cleanReceipts() {
+  const ids = new Set(S.expenses.map((e) => e.id));
+  for (const id of [...S.receipts]) if (!ids.has(id)) await delReceipt(id).catch(() => {});
+}
+
+// ---------- Deshacer ----------
+const stateJSON = () => JSON.stringify(Object.fromEntries(DATA_KEYS.map((k) => [k, S[k]])));
+function loadState(json) { const d = JSON.parse(json); DATA_KEYS.forEach((k) => (S[k] = d[k])); }
+function undoable(msg, fn) {
+  const before = stateJSON();
+  fn();
+  toast(msg, { label: 'Deshacer', fn: () => { loadState(before); persist(); render(); toast('Listo, se recuperó'); } });
+}
+
 // ---------- Copia de seguridad cifrada ----------
 // AES-GCM 256 con clave derivada de la contraseña (PBKDF2-SHA256). Todo pasa en el celular.
 const KDF_ITER = 310000;
@@ -687,18 +901,22 @@ async function decryptJSON(box, pass) {
   return JSON.parse(new TextDecoder().decode(plain));
 }
 // Pide una contraseña en una hoja propia (no en prompt, para que no se vea).
-function askPassword({ title, hint, confirm2 = false }) {
+function askPassword({ title, hint, confirm2 = false, pin = false, check = null }) {
   return new Promise((resolve) => {
     const d = $('pwsheet');
     $('pw-title').textContent = title; $('pw-hint').textContent = hint;
     $('pw-1').value = ''; $('pw-2').value = ''; $('pw-err').textContent = '';
     $('pw-2row').hidden = !confirm2;
+    ['pw-1', 'pw-2'].forEach((id) => { $(id).inputMode = pin ? 'numeric' : 'text'; $(id).classList.toggle('pin', pin); });
+    $('pw-1').placeholder = pin ? 'PIN' : 'Contraseña';
     const done = (v) => { d.close(); $('pw-ok').onclick = $('pw-cancel').onclick = d.onclose = null; resolve(v); };
-    $('pw-ok').onclick = () => {
+    $('pw-ok').onclick = async () => {
       const p1 = $('pw-1').value;
-      if (confirm2 && p1.length < 8) return ($('pw-err').textContent = 'Usá al menos 8 caracteres');
-      if (confirm2 && p1 !== $('pw-2').value) return ($('pw-err').textContent = 'Las contraseñas no coinciden');
-      if (!p1) return ($('pw-err').textContent = 'Escribí la contraseña');
+      if (pin && confirm2 && !/^\d{6,12}$/.test(p1)) return ($('pw-err').textContent = 'El PIN debe tener entre 6 y 12 números');
+      if (!pin && confirm2 && p1.length < 8) return ($('pw-err').textContent = 'Usá al menos 8 caracteres');
+      if (confirm2 && p1 !== $('pw-2').value) return ($('pw-err').textContent = pin ? 'Los PIN no coinciden' : 'Las contraseñas no coinciden');
+      if (!p1) return ($('pw-err').textContent = pin ? 'Escribí el PIN' : 'Escribí la contraseña');
+      if (check) { $('pw-err').textContent = 'Verificando…'; if (!(await check(p1))) return ($('pw-err').textContent = pin ? 'PIN incorrecto' : 'Contraseña incorrecta'); }
       done(p1);
     };
     $('pw-cancel').onclick = () => done(null);
@@ -707,22 +925,26 @@ function askPassword({ title, hint, confirm2 = false }) {
     d.showModal(); setTimeout(() => $('pw-1').focus(), 50);
   });
 }
-function snapshot() {
+async function snapshot(withReceipts = true) {
+  const receipts = {};
+  if (withReceipts) for (const id of S.receipts) { const b = await getReceipt(id).catch(() => null); if (b) receipts[id] = await blobToB64(b); }
   return { app: 'mis-gastos', version: APP_VERSION, date: new Date().toISOString(),
     expenses: S.expenses, budgets: S.budgets, cards: S.cards, recurring: S.recurring, accounts: S.accounts, transfers: S.transfers,
-    cfg: { currency: S.cfg.currency, usdRate: S.cfg.usdRate } };
+    cfg: { currency: S.cfg.currency, usdRate: S.cfg.usdRate }, receipts };
 }
+// Devuelve true si la copia se guardó.
 async function backup() {
   const pass = await askPassword({ title: 'Contraseña de la copia', hint: 'La vas a necesitar para restaurar. No la guardamos en ningún lado.', confirm2: true });
-  if (!pass) return;
+  if (!pass) return false;
   toast('Cifrando…');
-  const box = await encryptJSON(snapshot(), pass);
+  const box = await encryptJSON(await snapshot(), pass);
   const name = `mis-gastos-${isoDate(new Date())}.json`;
   const file = new File([JSON.stringify(box)], name, { type: 'application/json' });
   let saved = false;
   if (navigator.canShare && navigator.canShare({ files: [file] })) {
+    S.extAt = Date.now();
     try { await navigator.share({ files: [file], title: 'Copia de Mis Gastos' }); saved = true; }
-    catch (e) { if (e.name === 'AbortError') return toast('Copia cancelada'); }
+    catch (e) { if (e.name === 'AbortError') { toast('Copia cancelada'); return false; } }
   }
   if (!saved) {
     const a = document.createElement('a');
@@ -731,10 +953,38 @@ async function backup() {
   }
   S.cfg.lastBackup = new Date().toISOString(); persist(); render();
   toast('Copia cifrada guardada');
+  return true;
+}
+const unsavedChanges = () => S.expenses.length + S.recurring.length + S.transfers.length > 0
+  && (!S.cfg.lastBackup || (S.cfg.lastChange && S.cfg.lastChange > S.cfg.lastBackup));
+// Antes de algo que reemplaza o borra todo, ofrece guardar una copia. Devuelve false si el usuario se arrepiente.
+async function offerBackupFirst(what) {
+  if (!unsavedChanges()) return true;
+  if (!confirm(`Tus últimos cambios no están en ninguna copia. ¿Guardar una copia cifrada antes de ${what}?\n\nAceptar: guardar copia · Cancelar: seguir sin copia`)) return true;
+  return backup();
+}
+async function wipe() {
+  if (!(await offerBackupFirst('borrar'))) return;
+  if (!confirm('¿Borrar todos los datos de este celular? Solo vas a poder recuperarlos con una copia.')) return;
+  undoable('Datos borrados', () => {
+    S.expenses = []; S.budgets = {}; S.cards = []; S.recurring = []; S.transfers = []; S.accounts = null;
+    ensureCash(); persist(); render();
+  });
+  idb.del('kv', 'preRestore'); S.hasPreRestore = false;
+}
+async function applyBackup(d) {
+  S.expenses = d.expenses; S.budgets = d.budgets || {}; S.cards = d.cards || []; S.recurring = d.recurring || [];
+  S.accounts = d.accounts || null; S.transfers = d.transfers || [];
+  if (d.cfg?.currency) { S.cfg.currency = d.cfg.currency; S.cfg.usdRate = d.cfg.usdRate || S.cfg.usdRate; }
+  if (d.receipts) {
+    for (const id of [...S.receipts]) await delReceipt(id);
+    for (const [id, data] of Object.entries(d.receipts)) await putReceipt(id, new Blob([unb64(data)], { type: 'image/jpeg' }));
+  }
+  ensureCash(); S.cfg.setupPending = false; await persist(); setMoney(); render();
 }
 function restore() {
   const inp = document.createElement('input');
-  inp.type = 'file'; inp.accept = '.json,application/json';
+  inp.type = 'file'; inp.accept = '.json,application/json'; S.extAt = Date.now();
   inp.onchange = async () => {
     let d;
     try { d = JSON.parse(await inp.files[0].text()); } catch (e) { return toast('Ese archivo no es una copia de Mis Gastos'); }
@@ -745,14 +995,22 @@ function restore() {
       try { d = await decryptJSON(d, pass); } catch (e) { return toast('Contraseña incorrecta'); }
     }
     if (!Array.isArray(d.expenses)) return toast('Ese archivo no es una copia de Mis Gastos');
-    if (!confirm(`¿Reemplazar los datos de este celular por la copia del ${new Date(d.date).toLocaleDateString('es-UY')}?`)) return;
-    S.expenses = d.expenses; S.budgets = d.budgets || {}; S.cards = d.cards || []; S.recurring = d.recurring || [];
-    S.accounts = d.accounts || null; S.transfers = d.transfers || [];
-    if (d.cfg?.currency) { S.cfg.currency = d.cfg.currency; S.cfg.usdRate = d.cfg.usdRate || S.cfg.usdRate; }
-    ensureCash(); S.cfg.setupPending = false; persist(); setMoney(); render();
-    toast('Copia restaurada');
+    if (!(await offerBackupFirst('restaurar'))) return;
+    if (!confirm(`¿Reemplazar los datos de este celular por la copia del ${new Date(d.date).toLocaleDateString('es-UY')}? Si te equivocás, podés volver atrás desde Ajustes.`)) return;
+    // Guarda lo que había (con recibos) para poder volver atrás.
+    await idb.set('kv', 'preRestore', await seal(await snapshot()));
+    S.hasPreRestore = true;
+    await applyBackup(d);
+    toast('Copia restaurada', { label: 'Deshacer', fn: undoRestore });
   };
   inp.click();
+}
+async function undoRestore() {
+  const pre = await unseal(await idb.get('kv', 'preRestore')).catch(() => null);
+  if (!pre) return toast('No hay datos anteriores para recuperar');
+  await applyBackup(pre);
+  await idb.del('kv', 'preRestore'); S.hasPreRestore = false; render();
+  toast('Volviste a los datos de antes de restaurar');
 }
 const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
 function ago(iso) {
@@ -785,6 +1043,8 @@ function openExpense(id = null, fixed = false) {
   $('f-inst').innerHTML = Array.from({ length: 36 }, (_, i) => `<option value="${i + 1}">${i + 1 === 1 ? '1 pago' : i + 1 + ' cuotas'}</option>`).join('');
   $('f-inst').value = e ? String(nInst(e)) : '1';
   $('f-delete-group').hidden = !e;
+  S.pendingReceipt = null; showReceiptPreview(null);
+  if (e && !rule && S.receipts.has(e.id)) getReceipt(e.id).then((b) => { if (S.editingId === e.id && !S.pendingReceipt) showReceiptPreview(b); }).catch(() => {});
   applyType();
   $('sheet').showModal();
   if (!e) setTimeout(() => $('f-amount').focus(), 120);
@@ -826,6 +1086,7 @@ function renderCatGrid() {
     `<button type="button" class="${c.name === S.selCat ? 'on' : ''}" data-action="pick-cat" data-cat="${c.name}">${icon(c)}${c.name}</button>`).join('');
 }
 function updateRec() {
+  $('f-receipt-group').hidden = $('f-rec').checked;
   const rec = $('f-rec').checked, byDate = $('f-end-mode').value === 'date';
   $('f-end-row').hidden = !rec;
   $('f-end-month-row').hidden = !(rec && byDate);
@@ -887,13 +1148,19 @@ function saveExpense() {
     return toast(wasEditing ? 'Fijo actualizado' : 'Fijo mensual guardado');
   }
   if (S.editingRule) deleteRecurring(S.editingId);   // un fijo pasó a gasto común
-  upsertExpense({ id: S.editingId || uid(), type: S.selType, amount: r2(amount), category: S.selCat, date,
+  const id = S.editingRule ? uid() : S.editingId || uid();
+  const beforeB = inc ? null : budgetUse(S.selCat, monthKey(parseLocal(date)));
+  if (S.pendingReceipt instanceof Blob) putReceipt(id, S.pendingReceipt).then(render).catch(() => toast('No se pudo guardar la foto'));
+  else if (S.pendingReceipt === 'delete') delReceipt(id).then(render);
+  S.pendingReceipt = null;
+  upsertExpense({ id, type: S.selType, amount: r2(amount), category: S.selCat, date,
     note: $('f-note').value.trim(), method, installments, ...cur, rate: usd ? r2(rate) : '' });
   $('sheet').close();
   const d = parseLocal(date);
   S.offset = Math.min(0, monthKey(d) - nowKey());
   render();
-  toast(wasEditing ? 'Movimiento actualizado' : installments > 1 ? `Compra en ${installments} cuotas guardada` : inc ? 'Ingreso guardado' : 'Gasto guardado');
+  const msg = wasEditing ? 'Movimiento actualizado' : installments > 1 ? `Compra en ${installments} cuotas guardada` : inc ? 'Ingreso guardado' : 'Gasto guardado';
+  toast(beforeB ? budgetAlertMsg(S.selCat, beforeB, budgetUse(S.selCat, beforeB.key)) || msg : msg);
 }
 
 // ---------- Hojas de presupuesto y tarjeta ----------
@@ -1110,6 +1377,238 @@ function exportCSV() {
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
 
+// ---------- Bloqueo con PIN y huella ----------
+let LOCK = null;   // { pin: {salt, iter, iv, data}, bio?: {credId, prfSalt, iv, data} } — la DEK envuelta, nunca el PIN
+async function checkPin(pin) {
+  try { await aesOpen(await pinKey(pin, unb64(LOCK.pin.salt), LOCK.pin.iter), LOCK.pin); return true; } catch { return false; }
+}
+async function enableLock() {
+  const pin = await askPassword({ title: 'Elegí un PIN', hint: 'De 6 a 12 números. Te lo va a pedir cada vez que abras la app. Si lo olvidás, solo recuperás tus datos con una copia.', confirm2: true, pin: true });
+  if (!pin) return;
+  toast('Cifrando tus datos…');
+  DEK_RAW = crypto.getRandomValues(new Uint8Array(32)); DEK = await importAes(DEK_RAW);
+  LOCK = { v: 1, pin: await wrapWithPin(pin) };
+  await idb.set('kv', 'lock', LOCK);
+  await resealAll(null);
+  render(); toast('Bloqueo activado: tus datos quedan cifrados');
+}
+async function disableLock() {
+  if (!(await askPassword({ title: 'Desactivar bloqueo', hint: 'Ingresá tu PIN actual.', pin: true, check: checkPin }))) return;
+  const prev = DEK; DEK = null; DEK_RAW = null;
+  await resealAll(prev);
+  await idb.del('kv', 'lock'); LOCK = null;
+  render(); toast('Bloqueo desactivado');
+}
+async function changePin() {
+  if (!(await askPassword({ title: 'PIN actual', hint: 'Ingresá tu PIN actual.', pin: true, check: checkPin }))) return;
+  const pin = await askPassword({ title: 'PIN nuevo', hint: 'De 6 a 12 números.', confirm2: true, pin: true });
+  if (!pin) return;
+  LOCK.pin = await wrapWithPin(pin); await idb.set('kv', 'lock', LOCK);
+  toast('PIN cambiado');
+}
+async function enableBio() {
+  try {
+    const prfSalt = crypto.getRandomValues(new Uint8Array(32));
+    const cred = await navigator.credentials.create({ publicKey: {
+      challenge: crypto.getRandomValues(new Uint8Array(32)), rp: { name: 'Mis Gastos', id: location.hostname },
+      user: { id: crypto.getRandomValues(new Uint8Array(16)), name: 'Mis Gastos', displayName: 'Mis Gastos' },
+      pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -257 }],
+      authenticatorSelection: { authenticatorAttachment: 'platform', userVerification: 'required', residentKey: 'preferred' },
+      timeout: 60000, extensions: { prf: {} },
+    } });
+    if (cred.getClientExtensionResults()?.prf?.enabled === false) throw new Error('prf');
+    const credId = new Uint8Array(cred.rawId);
+    S.extAt = Date.now();
+    const secret = await bioSecret(credId, prfSalt);
+    LOCK.bio = { credId: b64(credId), prfSalt: b64(prfSalt), ...(await aesSeal(await prfKey(secret), DEK_RAW)) };
+    await idb.set('kv', 'lock', LOCK); render();
+    toast('Listo, ya podés desbloquear con tu huella');
+  } catch (e) {
+    toast(e.name === 'NotAllowedError' ? 'Cancelado' : 'Tu celular no permite usar la huella en esta app. Seguí con el PIN.');
+  }
+}
+async function disableBio() { delete LOCK.bio; await idb.set('kv', 'lock', LOCK); render(); toast('Huella desactivada'); }
+function showLock() {
+  return new Promise((resolve) => {
+    $('lock').hidden = false; $('lock-bio').hidden = !LOCK.bio; $('lock-err').textContent = '';
+    let fails = 0, until = 0;
+    const finish = () => { $('lock').hidden = true; $('lock-pin').value = ''; resolve(); };
+    const tryPin = async () => {
+      if (Date.now() < until) return ($('lock-err').textContent = `Esperá ${Math.ceil((until - Date.now()) / 1000)} segundos`);
+      const pin = $('lock-pin').value; if (!pin) return;
+      $('lock-err').textContent = 'Verificando…'; $('lock-go').disabled = true;
+      try { await unlockWithPin(LOCK, pin); finish(); }
+      catch {
+        fails++; $('lock-pin').value = '';
+        $('lock-err').textContent = 'PIN incorrecto';
+        if (fails >= 5) { until = Date.now() + 30000 * (fails - 4); $('lock-err').textContent = `Demasiados intentos. Esperá ${30 * (fails - 4)} segundos`; }
+      } finally { $('lock-go').disabled = false; }
+    };
+    const tryBio = async () => {
+      try { await unlockWithBio(LOCK); finish(); }
+      catch (e) { $('lock-err').textContent = e.name === 'NotAllowedError' ? '' : 'No se pudo usar la huella. Usá el PIN.'; }
+    };
+    $('lock-go').onclick = tryPin;
+    $('lock-pin').onkeydown = (e) => { if (e.key === 'Enter') tryPin(); };
+    $('lock-bio').onclick = tryBio;
+    $('lock-forgot').onclick = async () => {
+      if (!confirm('Sin el PIN no hay forma de abrir los datos de este celular, ni siquiera para nosotros. ¿Borrarlos y empezar de nuevo? Después podés restaurar una copia cifrada desde Ajustes.')) return;
+      await idb.clear('kv'); await idb.clear('receipts'); location.reload();
+    };
+    setTimeout(() => $('lock-pin').focus(), 100);
+  });
+}
+// Se vuelve a bloquear después de 1 minuto en segundo plano (salvo que hayas ido a elegir una foto o compartir).
+let hiddenAt = 0;
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) { hiddenAt = Date.now(); return; }
+  if (LOCK && hiddenAt && Date.now() - hiddenAt > 60000 && !(S.extAt && hiddenAt - S.extAt < 3000)) location.reload();
+});
+
+// ---------- Importar estado de cuenta (CSV) ----------
+function parseCSV(text) {
+  text = text.replace(/^\ufeff/, '');
+  const first = text.split(/\r?\n/).slice(0, 12).join('\n');
+  const delim = [';', ',', '\t', '|'].map((d) => [d, first.split(d).length]).sort((a, b) => b[1] - a[1])[0][0];
+  const rows = []; let row = [], cell = '', q = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (q) { if (ch === '"') { if (text[i + 1] === '"') { cell += '"'; i++; } else q = false; } else cell += ch; }
+    else if (ch === '"') q = true;
+    else if (ch === delim) { row.push(cell.trim()); cell = ''; }
+    else if (ch === '\n' || ch === '\r') { if (ch === '\r' && text[i + 1] === '\n') i++; row.push(cell.trim()); rows.push(row); row = []; cell = ''; }
+    else cell += ch;
+  }
+  if (cell || row.length) { row.push(cell.trim()); rows.push(row); }
+  return rows.filter((r) => r.some((c) => c !== ''));
+}
+function parseDateAny(s) {
+  s = String(s || '').trim();
+  let m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (m) return `${m[1]}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}`;
+  m = s.match(/^(\d{1,2})[/.-](\d{1,2})[/.-](\d{2,4})/);
+  if (m) {
+    const y = m[3].length === 2 ? '20' + m[3] : m[3];
+    if (Number(m[2]) > 12 || Number(m[1]) > 31) return '';
+    return `${y}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`;
+  }
+  return '';
+}
+function parseMoney(s) {
+  s = String(s || '').replace(/[^\d,.\-()]/g, '');
+  if (!s) return NaN;
+  const neg = /^\(.*\)$/.test(s) || s.includes('-');
+  s = s.replace(/[()\-]/g, '');
+  const lc = s.lastIndexOf(','), ld = s.lastIndexOf('.');
+  if (lc > ld) s = s.replace(/\./g, '').replace(',', '.');           // 1.234,56
+  else if (ld > lc && lc >= 0) s = s.replace(/,/g, '');               // 1,234.56
+  else if (lc < 0 && /^\d{1,3}(\.\d{3})+$/.test(s)) s = s.replace(/\./g, ''); // 100.000
+  const n = parseFloat(s);
+  return neg ? -n : n;
+}
+const CAT_RULES = [
+  ['Sueldo', /sueldo|salario|haberes|n[oó]mina/],
+  ['Comida', /super|tienda inglesa|disco|devoto|ta-?ta|el dorado|macro ?mercado|frigo|restaur|pedidos ?ya|rappi|mc ?donald|burger|pizz|caf[eé]|panader|almac[eé]n|carnicer|verduler|chivit/],
+  ['Transporte', /ancap|petrobras|axion|disa|uber|cabify|stm|cutcsa|copsa|peaje|telepeaje|nafta|combustible|estaciona|taxi|buquebus|cot /],
+  ['Servicios', /\bute\b|\bose\b|antel|movistar|claro|internet|tel[eé]fono|seguro|gastos comunes|contribuci|tributo|imm|intendencia/],
+  ['Ocio', /netflix|spotify|disney|hbo|max |prime video|youtube|cine|movie|steam|playstation|xbox|teatro|tickantel|bar /],
+  ['Salud', /farmacia|farmashop|san roque|mutualista|m[eé]dic|hospital|sanatorio|cl[ií]nica|odont|[oó]ptica|casmu|smi|cosem|medica uruguaya/],
+  ['Casa', /alquiler|sodimac|ferreter|ikea|barraca|mueble|hogar|limpieza/],
+  ['Compras', /amazon|mercado ?libre|mercadopago|zara|shein|temu|aliexpress|tienda|shopping|ropa|calzado|electro/],
+];
+function guessCategory(desc, income) {
+  const d = desc.toLowerCase();
+  const same = S.expenses.find((e) => (e.note || '').toLowerCase() === d && isIncome(e) === income);
+  if (same) return same.category;
+  if (income) return /sueldo|salario|haberes|n[oó]mina/.test(d) ? 'Sueldo' : 'Otros ingresos';
+  const hit = CAT_RULES.find(([c, re]) => c !== 'Sueldo' && re.test(d));
+  return hit ? hit[0] : 'Otros';
+}
+const IMP = { rows: [], header: [], own: false };
+function pickImport() {
+  const inp = document.createElement('input');
+  inp.type = 'file'; inp.accept = '.csv,.txt,text/csv,text/plain'; S.extAt = Date.now();
+  inp.onchange = async () => {
+    const f = inp.files[0]; if (!f) return;
+    let text = await f.text();
+    if (text.includes('\ufffd')) text = new TextDecoder('windows-1252').decode(await f.arrayBuffer());   // bancos que exportan en Latin-1
+    const rows = parseCSV(text);
+    // La fila de encabezado es la última antes de la primera fila que tiene una fecha.
+    let h = rows.findIndex((r, i) => i > 0 && r.some((c) => parseDateAny(c)) && !rows[i - 1].some((c) => parseDateAny(c)));
+    if (h < 0) h = rows.findIndex((r) => r.some((c) => parseDateAny(c)));
+    if (h < 0) return toast('No encontré fechas en ese archivo. ¿Es un CSV del banco?');
+    const hasHeader = h > 0;
+    IMP.header = hasHeader ? rows[h - 1].map((c, i) => c || `Columna ${i + 1}`) : rows[h].map((_, i) => `Columna ${i + 1}`);
+    IMP.rows = rows.slice(h).filter((r) => r.some((c) => parseDateAny(c)));
+    const norm = IMP.header.map((c) => c.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, ''));
+    const find = (re, not) => norm.findIndex((c) => re.test(c) && !(not && not.test(c)));
+    IMP.own = norm.includes('tipo') && norm.includes('categoria');
+    const opts = IMP.header.map((c, i) => `<option value="${i}">${esc(c)}</option>`).join('');
+    ['i-date', 'i-desc', 'i-amount', 'i-credit'].forEach((id) => ($(id).innerHTML = opts));
+    const sample = IMP.rows[0] || [];
+    const dateCol = Math.max(0, find(/fecha|date/, /valor/) >= 0 ? find(/fecha|date/, /valor/) : sample.findIndex((c) => parseDateAny(c)));
+    const descCol = IMP.own ? norm.indexOf('nota') : find(/desc|concepto|detalle|referencia|movimiento|comercio|nota/);
+    const debit = find(/debito|cargo|egreso|retiro/), credit = find(/credito|abono|ingreso|deposito/);
+    const amountCol = IMP.own ? norm.findIndex((c) => c.startsWith('monto ')) : find(/importe|monto|amount|valor/, /saldo/);
+    $('i-date').value = dateCol;
+    $('i-desc').value = descCol >= 0 ? descCol : sample.findIndex((c, i) => i !== dateCol && isNaN(parseMoney(c)));
+    if (debit >= 0 && credit >= 0) { $('i-mode').value = 'split'; $('i-amount').value = debit; $('i-credit').value = credit; }
+    else { $('i-mode').value = 'signed'; $('i-amount').value = amountCol >= 0 ? amountCol : sample.findIndex((c, i) => i !== dateCol && !isNaN(parseMoney(c))); }
+    $('i-acc').innerHTML = S.accounts.map((a) => `<option value="${a.id}">${esc(a.name)}</option>`).join('') + S.cards.map((c) => `<option value="${c.id}">💳 ${esc(c.name)}</option>`).join('');
+    $('i-file').textContent = `${f.name} · ${plural(IMP.rows.length, 'fila')}`;
+    $('i-mode').closest('label').hidden = IMP.own;
+    updateImport();
+    $('isheet').showModal();
+  };
+  inp.click();
+}
+function importItems() {
+  const di = Number($('i-date').value), ni = Number($('i-desc').value), ai = Number($('i-amount').value), ci = Number($('i-credit').value);
+  const mode = $('i-mode').value, method = $('i-acc').value, acc = account(method);
+  const norm = IMP.header.map((c) => c.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, ''));
+  const ti = norm.indexOf('tipo'), ki = norm.indexOf('categoria');
+  const seen = new Set(S.expenses.map((e) => `${e.date}|${r2(Number(e.amount))}|${(e.note || '').toLowerCase()}`));
+  return IMP.rows.map((r) => {
+    const date = parseDateAny(r[di]);
+    let amt;
+    if (mode === 'split') { const d = parseMoney(r[ai]), c = parseMoney(r[ci]); amt = (c > 0 ? c : 0) - (Math.abs(d) > 0 ? Math.abs(d) : 0); }
+    else amt = parseMoney(r[ai]);
+    if (mode === 'expense') amt = -Math.abs(amt);
+    let income = amt > 0;
+    if (IMP.own && ti >= 0) { income = /ingreso/i.test(r[ti]); amt = Math.abs(amt); }
+    const note = String(r[ni] || '').replace(/\s+/g, ' ').trim().slice(0, 80);
+    const amount = r2(Math.abs(amt));
+    const valid = date && amount > 0;
+    let category = IMP.own && ki >= 0 && ALL_CATS.some((c) => c.name === r[ki]) ? r[ki] : guessCategory(note, income);
+    if (!income && INCOME_CATS.some((c) => c.name === category)) category = 'Otros';
+    const k = `${date}|${amount}|${note.toLowerCase()}`;
+    const dup = seen.has(k); seen.add(k);
+    return { valid, dup, e: { id: uid(), type: income ? 'income' : 'expense', amount, category, date, note, method: income && !acc ? CASH : method,
+      installments: 1, currency: acc && accUSD(acc) ? USD : '', rate: acc && accUSD(acc) ? S.cfg.usdRate || '' : '', source: 'import' } };
+  });
+}
+function updateImport() {
+  const split = $('i-mode').value === 'split';
+  $('i-credit-row').hidden = !split || IMP.own; $('i-amount-label').textContent = split ? 'Débito' : 'Monto';
+  const items = importItems(), ok = items.filter((x) => x.valid && !x.dup);
+  $('i-count').textContent = `${plural(ok.length, 'movimiento')} para importar${items.some((x) => x.dup) ? ` · ${plural(items.filter((x) => x.dup).length, 'repetido')}` : ''}`;
+  $('i-go').disabled = !ok.length;
+  $('i-preview').innerHTML = items.slice(0, 8).map(({ valid, dup, e }) => `<div class="row with-icon ${valid && !dup ? '' : 'skip'}">
+    ${icon(cat(e.category))}<span class="ri"><b>${esc(e.note || e.category)}</b><small>${valid ? `${esc(e.category)} · ${esc(e.date)}${dup ? ' · repetido' : ''}` : 'Fila sin fecha o monto'}</small></span>
+    <span class="amt ${e.type === 'income' ? 'income' : ''}">${e.type === 'income' ? '+' : '-'}${fmtCur(e.amount, e.currency)}</span></div>`).join('')
+    + (items.length > 8 ? `<div class="row"><small>y ${items.length - 8} más…</small></div>` : '');
+}
+function doImport() {
+  const ok = importItems().filter((x) => x.valid && !x.dup).map((x) => x.e);
+  if (!ok.length) return;
+  $('isheet').close();
+  undoable(`${plural(ok.length, 'movimiento')} importado${ok.length === 1 ? '' : 's'}`, () => {
+    const now = new Date().toISOString();
+    ok.forEach((e) => { e.updated = now; S.expenses.push(e); });
+    enqueue();
+  });
+}
+
 // ---------- Eventos ----------
 document.addEventListener('click', (ev) => {
   const tab = ev.target.closest('[data-tab]');
@@ -1141,11 +1640,14 @@ document.addEventListener('click', (ev) => {
       const id = S.editingAccountId;
       const used = [...S.expenses, ...S.recurring].some((e) => e.method === id) || S.transfers.some((t) => t.from === id || t.to === id);
       if (!confirm(used ? '¿Eliminar esta cuenta? Sus gastos e ingresos pasan a Efectivo y se borran sus transferencias.' : '¿Eliminar esta cuenta?')) return;
+      undoable('Cuenta eliminada', () => {
       S.expenses.filter((e) => e.method === id).forEach((e) => upsertExpense({ ...e, method: CASH }));
       S.recurring.filter((r) => r.method === id).forEach((r) => upsertRecurring({ ...r, method: CASH }));
       S.transfers.filter((t) => t.from === id || t.to === id).forEach((t) => deleteTransfer(t.id));
       S.cards.filter((c) => c.payFrom === id).forEach((c) => upsertCard({ ...c, payFrom: '' }));
-      deleteAccount(id); $('asheet').close(); toast('Cuenta eliminada');
+      deleteAccount(id);
+      });
+      $('asheet').close();
     },
     'account-transfer': () => { $('asheet').close(); openTransfer(null, S.editingAccountId); },
     'new-transfer': () => openTransfer(),
@@ -1158,7 +1660,7 @@ document.addEventListener('click', (ev) => {
     },
     'close-tsheet': () => $('tsheet').close(),
     'save-transfer': saveTransfer,
-    'delete-transfer': () => { if (confirm('¿Eliminar este movimiento?')) { deleteTransfer(S.editingTransferId); $('tsheet').close(); $('psheet').close(); toast('Eliminado'); } },
+    'delete-transfer': () => { const id = S.editingTransferId; $('tsheet').close(); $('psheet').close(); undoable('Eliminado', () => deleteTransfer(id)); },
     'pay-card': () => openPay(el.dataset.id),
     'close-psheet': () => $('psheet').close(),
     'pay-cur': () => { S.payCur = el.dataset.cur; updatePay(true); },
@@ -1168,8 +1670,8 @@ document.addEventListener('click', (ev) => {
     'save-expense': saveExpense,
     'delete-expense': () => {
       if (S.editingRule) {
-        if (confirm('¿Eliminar este fijo? Desaparece de todos los meses. Para que deje de correr desde ahora, mejor poné un último mes.')) { deleteRecurring(S.editingId); $('sheet').close(); toast('Fijo eliminado'); }
-      } else if (confirm('¿Eliminar este movimiento? Si es en cuotas, se eliminan todas.')) { deleteExpense(S.editingId); $('sheet').close(); toast('Eliminado'); }
+        if (confirm('¿Eliminar este fijo? Desaparece de todos los meses. Para que deje de correr desde ahora, mejor poné un último mes.')) { const id = S.editingId; $('sheet').close(); undoable('Fijo eliminado', () => deleteRecurring(id)); }
+      } else { const id = S.editingId, e = S.expenses.find((x) => x.id === id); $('sheet').close(); undoable(nInst(e || {}) > 1 ? 'Compra en cuotas eliminada' : 'Movimiento eliminado', () => deleteExpense(id)); }
     },
     'filter': () => { S.catFilter = el.dataset.cat; render(); },
     'edit-budget': () => openBudget(el.dataset.cat),
@@ -1185,22 +1687,31 @@ document.addEventListener('click', (ev) => {
     'save-card': saveCard,
     'delete-card': () => {
       const used = [...S.expenses, ...S.recurring].some((e) => e.method === S.editingCardId);
-      if (confirm(used ? 'Esta tarjeta tiene compras registradas. ¿Eliminarla igual? Las compras quedan como efectivo.' : '¿Eliminar esta tarjeta?')) {
+      if (confirm(used ? 'Esta tarjeta tiene compras registradas. ¿Eliminarla igual? Las compras quedan como efectivo.' : '¿Eliminar esta tarjeta?')) undoable('Tarjeta eliminada', () => {
         S.expenses.filter((e) => e.method === S.editingCardId).forEach((e) => upsertExpense({ ...e, method: CASH, installments: 1 }));
         S.recurring.filter((r) => r.method === S.editingCardId).forEach((r) => upsertRecurring({ ...r, method: CASH }));
         deleteCard(S.editingCardId); $('csheet').close();
-      }
+      });
     },
     'export': exportCSV,
     'backup': backup,
     'backup-later': () => { S.cfg.backupSnooze = new Date(Date.now() + 3 * 864e5).toISOString(); persist(); render(); },
     'restore': restore,
-    'wipe': () => {
-      if (confirm('¿Borrar todos los datos de este dispositivo?')) {
-        S.expenses = []; S.budgets = {}; S.cards = []; S.recurring = []; S.transfers = []; S.accounts = null;
-        ensureCash(); persist(); render();
-      }
-    },
+    'wipe': wipe,
+    'undo-restore': () => { if (confirm('¿Volver a los datos que tenías antes de restaurar la copia?')) undoRestore(); },
+    'add-receipt': pickReceipt,
+    'view-receipt': viewReceipt,
+    'del-receipt': () => { S.pendingReceipt = 'delete'; showReceiptPreview(null); },
+    'close-rsheet': () => $('rsheet').close(),
+    'import': pickImport,
+    'close-isheet': () => $('isheet').close(),
+    'do-import': doImport,
+    'goto-month': () => { S.offset = Number(el.dataset.off); render(); },
+    'lock-on': enableLock,
+    'lock-off': disableLock,
+    'lock-change': changePin,
+    'bio-on': enableBio,
+    'bio-off': disableBio,
   };
   actions[el.dataset.action]?.();
 });
@@ -1224,10 +1735,11 @@ document.addEventListener('change', (ev) => {
   if (ev.target.id === 'f-inst') updateInstHint();
   if (['t-from', 't-to'].includes(ev.target.id)) updateTransfer(true);
   if (ev.target.id === 'p-from') updatePay();
+  if (['i-date', 'i-desc', 'i-mode', 'i-amount', 'i-credit', 'i-acc'].includes(ev.target.id)) updateImport();
   if (ev.target.id === 'a-type') updateAccountForm();
   if (['f-rec', 'f-end-mode', 'f-end', 'f-date'].includes(ev.target.id)) updateRec();
 });
-['sheet', 'bsheet', 'csheet', 'asheet', 'tsheet', 'psheet'].forEach((id) => $(id).addEventListener('click', (ev) => { if (ev.target.id === id) ev.target.close(); }));
+['sheet', 'bsheet', 'csheet', 'asheet', 'tsheet', 'psheet', 'rsheet', 'isheet'].forEach((id) => $(id).addEventListener('click', (ev) => { if (ev.target.id === id) ev.target.close(); }));
 $('f-amount').addEventListener('keydown', (ev) => { if (ev.key === 'Enter') saveExpense(); });
 
 if ('serviceWorker' in navigator) {
@@ -1243,24 +1755,54 @@ function ensureCash() {
   if (!Array.isArray(S.accounts)) S.accounts = [];
   if (!account(CASH)) S.accounts.unshift({ id: CASH, name: 'Efectivo', type: 'cash', currency: '', initial: 0, since: new Date().toISOString() });
 }
-if (!Array.isArray(S.accounts)) {
+
+// ---------- Arranque ----------
+const LEGACY_KEYS = ['mg.expenses', 'mg.budgets', 'mg.cards', 'mg.recurring', 'mg.accounts', 'mg.transfers', 'mg.cfg', 'mg.queue', 'mg.lastSync'];
+async function boot() {
+  let rec;
+  try {
+    LOCK = (await idb.get('kv', 'lock')) || null;
+    rec = await idb.get('kv', 'data');
+    // v8: los datos pasan de localStorage a IndexedDB. Se borran de localStorage solo después de verificar la copia.
+    if (!rec && ['mg.expenses', 'mg.cfg', 'mg.accounts'].some((k) => localStorage.getItem(k) !== null)) {
+      const d = { expenses: legacy.get('mg.expenses', []), budgets: legacy.get('mg.budgets', {}), cards: legacy.get('mg.cards', []),
+        recurring: legacy.get('mg.recurring', []), accounts: legacy.get('mg.accounts', null), transfers: legacy.get('mg.transfers', []),
+        cfg: legacy.get('mg.cfg', {}) };
+      await idb.set('kv', 'data', { v: 1, plain: d });
+      rec = await idb.get('kv', 'data');
+      if (JSON.stringify(rec?.plain) === JSON.stringify(d)) LEGACY_KEYS.forEach((k) => localStorage.removeItem(k));
+    }
+  } catch (e) {
+    console.error(e);
+    document.body.insertAdjacentHTML('afterbegin', '<p class="footer-note center" style="padding:40px 20px">Este navegador no permite guardar datos. Abrí Mis Gastos en Chrome, sin modo incógnito.</p>');
+    return;
+  }
+  if (LOCK) await showLock();
+  const d = (await unseal(rec)) || {};
+  DATA_KEYS.forEach((k) => { if (d[k] !== undefined) S[k] = d[k]; });
+  S.cfg = { usdRate: 0, rateDate: '', currency: 'UYU', ...(d.cfg || {}) };
+  S.receipts = new Set(await idb.keys('receipts'));
+  S.hasPreRestore = !!(await idb.get('kv', 'preRestore'));
+
+  if (!Array.isArray(S.accounts)) {
+    ensureCash();
+    const now = new Date().toISOString();
+    S.cards.forEach((c) => { if (!c.since) c.since = now; });
+    S.cfg.setupPending = true;
+    persist();
+  }
   ensureCash();
-  const now = new Date().toISOString();
-  S.cards.forEach((c) => { if (!c.since) c.since = now; });
-  S.cfg.setupPending = true;
-  persist();
-}
-ensureCash();
+  // La sincronización con Google Sheets se retiró en v7.1: se limpia lo que haya quedado guardado.
+  if (S.cfg.url || S.cfg.token) {
+    ['url', 'token', 'sheetUrl', 'email'].forEach((k) => delete S.cfg[k]); persist();
+    setTimeout(() => toast('Ahora tus datos quedan solo en tu celular. Guardá copias cifradas desde Ajustes.'), 800);
+  }
+  // Pide al navegador que no borre los datos por falta de espacio.
+  if (navigator.storage?.persist) navigator.storage.persisted().then((p) => p || navigator.storage.persist());
 
-// La sincronización con Google Sheets se retiró en v7.1: se limpia lo que haya quedado guardado.
-if (S.cfg.url || S.cfg.token) {
-  ['url', 'token', 'sheetUrl', 'email'].forEach((k) => delete S.cfg[k]); persist();
-  setTimeout(() => toast('Ahora tus datos quedan solo en tu celular. Guardá copias cifradas desde Ajustes.'), 800);
+  setMoney();
+  show('home');
+  if (rateStale()) fetchRate();
+  cleanReceipts();
 }
-['mg.queue', 'mg.lastSync'].forEach((k) => localStorage.removeItem(k));
-// Pide al navegador que no borre los datos por falta de espacio.
-if (navigator.storage?.persist) navigator.storage.persisted().then((p) => p || navigator.storage.persist());
-
-setMoney();
-show('home');
-if (rateStale()) fetchRate();
+boot();

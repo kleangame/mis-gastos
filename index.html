@@ -87,6 +87,14 @@
       <label class="row"><span id="f-date-label">Fecha</span><input id="f-date" type="date"></label>
       <label class="row"><span>Nota</span><input id="f-note" type="text" maxlength="80" placeholder="Opcional"></label>
     </div>
+    <div class="group" id="f-receipt-group">
+      <button type="button" class="row blue" data-action="add-receipt" id="f-receipt-add">📎 Adjuntar foto del recibo<span></span></button>
+      <div class="row receipt-prev" id="f-receipt-prev" hidden>
+        <img id="f-receipt-img" alt="Recibo" data-action="view-receipt">
+        <button type="button" class="link" data-action="view-receipt">Ver</button>
+        <button type="button" class="link danger" data-action="del-receipt">Quitar</button>
+      </div>
+    </div>
     <div class="group" id="f-delete-group" hidden>
       <button type="button" class="row danger center" data-action="delete-expense">Eliminar gasto</button>
     </div>
@@ -240,6 +248,53 @@
       <button type="button" class="row danger center" data-action="delete-transfer">Eliminar pago</button>
     </div>
   </dialog>
+
+  <!-- Foto del recibo -->
+  <dialog id="rsheet" class="sheet">
+    <div class="grabber"></div>
+    <header class="sheet-head"><span></span><strong>Recibo</strong><button type="button" class="link bold" data-action="close-rsheet">Listo</button></header>
+    <img id="r-img" class="receipt-full" alt="Recibo">
+  </dialog>
+
+  <!-- Importar estado de cuenta -->
+  <dialog id="isheet" class="sheet">
+    <div class="grabber"></div>
+    <header class="sheet-head">
+      <button type="button" class="link" data-action="close-isheet">Cancelar</button>
+      <strong>Importar</strong>
+      <button type="button" class="link bold" data-action="do-import" id="i-go">Importar</button>
+    </header>
+    <p class="hint center" id="i-file" style="margin:0 16px 14px"></p>
+    <div class="group">
+      <label class="row"><span>Fecha</span><select id="i-date"></select></label>
+      <label class="row"><span>Descripción</span><select id="i-desc"></select></label>
+      <label class="row"><span>Montos</span><select id="i-mode">
+        <option value="signed">Una columna (negativo = gasto)</option>
+        <option value="expense">Una columna, todos gastos</option>
+        <option value="split">Débito y crédito separados</option>
+      </select></label>
+      <label class="row" id="i-amount-row"><span id="i-amount-label">Monto</span><select id="i-amount"></select></label>
+      <label class="row" id="i-credit-row" hidden><span>Crédito</span><select id="i-credit"></select></label>
+      <label class="row"><span>Cuenta</span><select id="i-acc"></select></label>
+    </div>
+    <div class="section-h"><span id="i-count">Vista previa</span></div>
+    <div class="group" id="i-preview"></div>
+    <p class="footer-note">Las categorías se eligen solas por la descripción; después podés cambiarlas. Los movimientos repetidos se saltean.</p>
+  </dialog>
+
+  <!-- Bloqueo -->
+  <div id="lock" class="lock" hidden>
+    <div class="lock-box">
+      <div class="lock-icon">🔒</div>
+      <h2>Mis Gastos</h2>
+      <p class="hint center">Ingresá tu PIN</p>
+      <input id="lock-pin" class="field pin" type="password" inputmode="numeric" autocomplete="off" maxlength="12" enterkeyhint="go">
+      <p class="field-error center" id="lock-err"></p>
+      <button class="btn" id="lock-go">Desbloquear</button>
+      <button class="btn secondary" id="lock-bio" hidden>Usar huella</button>
+      <button class="link" id="lock-forgot">Olvidé mi PIN</button>
+    </div>
+  </div>
 
   <div id="toast" class="toast" hidden></div>
 
