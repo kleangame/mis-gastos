@@ -18,6 +18,8 @@ App web instalable (PWA) para registrar gastos, ingresos, cuentas, tarjetas y pr
 - «Deshacer» después de eliminar, importar o borrar.
 - Rendimientos: cada cuenta puede tener una tasa anual; la app estima lo ganado (interés compuesto diario) y con «Registrar rendimiento» guardás el saldo real o el estimado. La diferencia queda como ingreso «Rendimientos».
 - Categorías propias de gasto o ingreso, con el nombre, emoji y color de fondo que quieras (Ajustes → Mis categorías, o «Nueva» al cargar un gasto).
+- Bancos con varias cajas: cada cuenta puede indicar su banco y se agrupan juntas. Una tarjeta puede pagarse desde una caja en pesos y otra en dólares, o sin cuenta (efectivo, Abitab, Redpagos).
+- Deuda anterior de tarjetas: cargá compras en cuotas en curso (cuotas que faltan) y el saldo ya facturado; cuentan como deuda sin inflar tus gastos de meses pasados.
 - Saludo con tu nombre o apodo (opcional; se pregunta la primera vez y se cambia en Ajustes).
 
 ## Seguridad en el celular

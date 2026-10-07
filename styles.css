@@ -297,3 +297,4 @@ details.adv[open] summary::after { content: " ⌄"; }
 .k-colors button.on { box-shadow: 0 0 0 3px var(--bg), 0 0 0 5px var(--blue); }
 .k-picker { width: 44px; height: 30px; border: none; background: none; padding: 0; }
 .ri-inline { display: flex; align-items: center; gap: 10px; }
+.debt-link { display: block; margin: -4px auto 14px; font-size: 14px; }

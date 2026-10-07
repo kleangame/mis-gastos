@@ -146,9 +146,10 @@
       <label class="row"><span>Nombre</span><input id="c-name" type="text" maxlength="30" placeholder="Visa BROU"></label>
       <label class="row"><span>Límite</span><input id="c-limit" inputmode="decimal" placeholder="100.000"></label>
       <label class="row"><span>Día de cierre</span><input id="c-close" inputmode="numeric" placeholder="Opcional (1-31)"></label>
-      <label class="row"><span>Se paga desde</span><select id="c-pay"></select></label>
+      <label class="row"><span id="c-pay-label">Se paga desde</span><select id="c-pay"></select></label>
+      <label class="row" id="c-pay-usd-row" hidden><span>Dólares desde</span><select id="c-pay-usd"></select></label>
     </div>
-    <p class="hint sheet-hint">Con el día de cierre, las compras hechas después de esa fecha empiezan a pagarse el mes siguiente.</p>
+    <p class="hint sheet-hint">Al pagar la tarjeta, se propone la cuenta según la moneda del saldo; igual podés elegir otra. Con el día de cierre, las compras hechas después de esa fecha empiezan a pagarse el mes siguiente.</p>
     <div class="group" id="c-delete-group" hidden>
       <button type="button" class="row danger center" data-action="delete-card">Eliminar tarjeta</button>
     </div>
@@ -163,7 +164,9 @@
       <button type="button" class="link bold" data-action="save-account">Guardar</button>
     </header>
     <div class="group" style="margin-top:12px">
-      <label class="row"><span>Nombre</span><input id="a-name" type="text" maxlength="30" placeholder="BROU caja de ahorro"></label>
+      <label class="row" id="a-bank-row"><span>Banco</span><input id="a-bank" type="text" maxlength="24" placeholder="Opcional (BROU, Itaú…)" list="a-bank-list" autocomplete="off"></label>
+      <datalist id="a-bank-list"></datalist>
+      <label class="row"><span>Nombre</span><input id="a-name" type="text" maxlength="30" placeholder="Caja de ahorro pesos"></label>
       <label class="row"><span>Tipo</span><select id="a-type">
         <option value="bank">🏦 Banco</option><option value="cash">💵 Efectivo</option>
         <option value="savings">🐷 Ahorro</option><option value="invest">📈 Inversión</option></select></label>
@@ -250,6 +253,34 @@
     <p class="hint sheet-hint" id="p-hint" hidden></p>
     <div class="group" id="p-delete-group" hidden>
       <button type="button" class="row danger center" data-action="delete-transfer">Eliminar pago</button>
+    </div>
+  </dialog>
+
+  <!-- Deuda anterior de una tarjeta -->
+  <dialog id="dsheet" class="sheet">
+    <div class="grabber"></div>
+    <header class="sheet-head">
+      <button type="button" class="link" data-action="close-dsheet">Cancelar</button>
+      <strong id="d-title">Deuda anterior</strong>
+      <button type="button" class="link bold" data-action="save-debt">Guardar</button>
+    </header>
+    <div class="segmented" id="d-kind" style="margin:4px 16px 14px">
+      <button type="button" data-action="d-kind" data-kind="plan">Compra en cuotas</button>
+      <button type="button" data-action="d-kind" data-kind="balance">Saldo a pagar</button>
+    </div>
+    <div class="segmented" id="d-cur" style="margin:0 16px 14px" hidden>
+      <button type="button" data-action="d-cur" data-cur="">Pesos</button>
+      <button type="button" data-action="d-cur" data-cur="USD">Dólares</button>
+    </div>
+    <div class="group">
+      <label class="row"><span>Descripción</span><input id="d-note" type="text" maxlength="40" placeholder="Heladera"></label>
+      <label class="row"><span id="d-amount-label">Valor de la cuota</span><input id="d-amount" inputmode="decimal" placeholder="0"></label>
+      <label class="row" id="d-left-row"><span>Cuotas que faltan</span><input id="d-left" inputmode="numeric" placeholder="Incluye la de este mes"></label>
+      <label class="row" id="d-total-row"><span>Cuotas en total</span><input id="d-total" inputmode="numeric" placeholder="Opcional"></label>
+    </div>
+    <p class="hint sheet-hint" id="d-hint"></p>
+    <div class="group" id="d-delete-group" hidden>
+      <button type="button" class="row danger center" data-action="delete-debt">Eliminar</button>
     </div>
   </dialog>
 

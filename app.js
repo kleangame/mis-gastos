@@ -28,7 +28,7 @@ const CARD_COLORS = [
 const CURRENCIES = ['UYU', 'USD', 'ARS', 'EUR', 'BRL', 'CLP', 'MXN', 'COP', 'PEN'];
 const MONTHS = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
 const CASH = 'cash';           // id de la cuenta Efectivo (también usado por datos de versiones anteriores)
-const APP_VERSION = '8.3.0';
+const APP_VERSION = '8.4.0';
 const ACC_TYPES = {
   cash:    { label: 'Efectivo',  emoji: '💵', color: '#34C759' },
   bank:    { label: 'Banco',     emoji: '🏦', color: '#007AFF' },
@@ -163,6 +163,11 @@ const cat = (name) => allCats().find((c) => c.name === name) || CATS[CATS.length
 const card = (id) => S.cards.find((c) => c.id === id);
 const account = (id) => (S.accounts || []).find((a) => a.id === id);
 const isCardM = (m) => !!card(m);
+// Bancos: agrupan varias cuentas (caja en pesos, en dólares, alimentación…).
+const bankNames = () => [...new Set((S.accounts || []).map((a) => (a.bank || '').trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'es'));
+const sameBank = (v) => { const t = String(v || '').trim().slice(0, 24); return bankNames().find((b) => b.toLowerCase() === t.toLowerCase()) || t; };
+const curName = (c) => (['UYU', 'ARS', 'MXN', 'COP', 'CLP'].includes(c) ? 'Pesos' : c === 'BRL' ? 'Reales' : c === 'EUR' ? 'Euros' : c === 'PEN' ? 'Soles' : c);
+const accLabel = (a) => (a.bank && !a.name.toLowerCase().includes(a.bank.toLowerCase()) ? `${a.bank} · ${a.name}` : a.name);
 const accIcon = (a) => { const t = ACC_TYPES[a.type] || ACC_TYPES.bank; return `<span class="ci" style="background:${t.color}">${t.emoji}</span>`; };
 const cardColor = (c) => CARD_COLORS[Math.max(0, S.cards.indexOf(c)) % CARD_COLORS.length];
 const uid = () => (crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2));
@@ -254,6 +259,7 @@ function entriesForMonth(key) {
   const out = [];
   for (const e of S.expenses) {
     const n = nInst(e);
+    if (e.opening && (e.opening === 'balance' || key < e.openKey)) continue;   // deuda previa a usar la app: no es gasto de ese mes
     if (n === 1 && !(isCardM(e.method) && !isIncome(e))) {
       if (monthKey(parseLocal(e.date)) === key) out.push({ ...e, src: e, k: 0, n: 1, value: baseAmount(e) });
       continue;
@@ -333,7 +339,8 @@ function cardStats(c) {
     let rem = 0, remCount = 0;
     for (let k = 0; k < n; k++) {
       const key = first + k, v = instCur(e, k);
-      if (key <= now && key >= sinceK) debt[cur] += v;
+      if (e.opening && key < e.openKey) continue;   // cuotas ya pagadas antes de cargarla
+      if (key <= now && (key >= sinceK || e.opening)) debt[cur] += v;
       if (key > now) fut[cur] += v;
       if (key >= now) { rem += v; remCount++; }
       if (key === now) thisMonth[cur] += v;
@@ -457,6 +464,59 @@ function barsSVG(endKey) {
   return { svg: `<svg class="bars" viewBox="0 0 ${W} ${H}" role="img" aria-label="Ingresos y gastos de los últimos 6 meses">${bars}</svg>`, avg };
 }
 
+
+
+// ---------- Deuda anterior de una tarjeta ----------
+// Para empezar con la tarjeta ya usada: compras en cuotas en curso y saldo del resumen. Cuenta como deuda, no como gasto del pasado.
+function openDebt(cardId, id = null) {
+  const e = id ? S.expenses.find((x) => x.id === id) : null;
+  const c = card(e ? e.method : cardId); if (!c) return;
+  S.debtCard = c.id; S.editingDebt = e ? e.id : null;
+  S.debtKind = e ? e.opening : 'plan'; S.debtCur = e && isUSD(e) ? USD : '';
+  const now = nowKey();
+  $('d-title').textContent = c.name;
+  $('d-note').value = e ? e.note || '' : '';
+  if (e && e.opening === 'plan') {
+    const n = nInst(e), left = n - Math.max(now - firstInstallmentKey(e), 0);
+    $('d-amount').value = numStr(instCur(e, 0)); $('d-left').value = String(Math.max(left, 1)); $('d-total').value = e.totalGiven ? String(n) : '';
+  } else { $('d-amount').value = e ? numStr(e.amount) : ''; $('d-left').value = ''; $('d-total').value = ''; }
+  $('d-delete-group').hidden = !e;
+  $('d-cur').hidden = !usdMode();
+  updateDebt();
+  $('dsheet').showModal();
+}
+function updateDebt() {
+  const plan = S.debtKind === 'plan';
+  document.querySelectorAll('#d-kind button').forEach((b) => b.classList.toggle('on', b.dataset.kind === S.debtKind));
+  document.querySelectorAll('#d-cur button').forEach((b) => b.classList.toggle('on', b.dataset.cur === S.debtCur));
+  $('d-left-row').hidden = $('d-total-row').hidden = !plan;
+  $('d-amount-label').textContent = plan ? 'Valor de la cuota' : 'Saldo a pagar';
+  $('d-note').placeholder = plan ? 'Heladera' : 'Resumen anterior';
+  const amt = parseAmount($('d-amount').value), left = parseInt($('d-left').value, 10);
+  $('d-hint').textContent = plan
+    ? (amt > 0 && left > 0 ? `Quedan ${fmtCur(r2(amt * left), S.debtCur)} en ${plural(left, 'cuota')}, desde este mes. ` : '') + 'Las cuotas que ya pagaste no se cuentan.'
+    : 'Lo que ya te facturaron y todavía no pagaste. Suma a la deuda de la tarjeta, no a tus gastos del mes.';
+}
+function saveDebt() {
+  const c = card(S.debtCard); if (!c) return;
+  const amt = parseAmount($('d-amount').value);
+  if (!(amt > 0)) return toast(S.debtKind === 'plan' ? 'Poné el valor de la cuota' : 'Poné el saldo a pagar');
+  const now = nowKey(), old = S.expenses.find((x) => x.id === S.editingDebt);
+  const ymd = (key) => isoDate(new Date(Math.floor(key / 12), key % 12, 1));
+  const base = { id: old ? old.id : uid(), type: 'expense', category: old ? old.category : 'Otros', method: c.id, currency: S.debtCur,
+    rate: S.debtCur === USD ? S.cfg.usdRate || '' : '', openKey: old ? old.openKey : now };
+  if (S.debtKind === 'plan') {
+    const left = parseInt($('d-left').value, 10), totalIn = parseInt($('d-total').value, 10);
+    if (!(left >= 1 && left <= 120)) return toast('¿Cuántas cuotas te faltan? (incluida la de este mes)');
+    const n = totalIn >= left ? totalIn : left;
+    const first = now - (n - left);
+    upsertExpense({ ...base, opening: 'plan', openKey: Math.min(base.openKey, now), amount: r2(amt * n), installments: n, totalGiven: totalIn >= left,
+      date: ymd(first), note: $('d-note').value.trim().slice(0, 40) || 'Compra en cuotas' });
+  } else {
+    upsertExpense({ ...base, opening: 'balance', amount: r2(amt), installments: 1, date: ymd(base.openKey), note: $('d-note').value.trim().slice(0, 40) || 'Saldo anterior' });
+  }
+  $('dsheet').close(); render(); toast('Deuda cargada en ' + c.name);
+}
 
 // ---------- Categorías propias ----------
 const CAT_COLORS = ['#FF3B30', '#FF9500', '#FFCC00', '#34C759', '#30B0C7', '#007AFF', '#5856D6', '#AF52DE', '#FF2D55', '#A2845E', '#8E8E93', '#1C1C1E'];
@@ -684,8 +744,9 @@ function debtLine(s) {
   return parts.join(' + ');
 }
 function renderCards() {
-  const avail = S.accounts.filter((a) => a.type === 'cash' || a.type === 'bank');
-  const saved = S.accounts.filter((a) => a.type === 'savings' || a.type === 'invest');
+  const avail = S.accounts.filter((a) => !a.bank && (a.type === 'cash' || a.type === 'bank'));
+  const saved = S.accounts.filter((a) => !a.bank && (a.type === 'savings' || a.type === 'invest'));
+  const banks = bankNames().map((b) => ({ b, list: S.accounts.filter((a) => a.bank === b) }));
   const have = S.accounts.reduce((s, a) => s + accountBase(a), 0);
   const stats = S.cards.map((c) => ({ c, s: cardStats(c) }));
   const owe = stats.reduce((a, x) => a + x.s.outstanding, 0);
@@ -721,6 +782,8 @@ function renderCards() {
     </div>
     <div class="section-h"><span>Disponible</span></div>
     <div class="group">${avail.map(accountRow).join('') || '<div class="row"><span class="val">Sin cuentas</span></div>'}</div>
+    ${banks.map(({ b, list }) => `<div class="section-h"><span>🏦 ${esc(b)}</span><span>${fmt(list.reduce((s, a) => s + accountBase(a), 0))}</span></div>
+      <div class="group">${list.map(accountRow).join('')}</div>`).join('')}
     ${saved.length ? `<div class="section-h"><span>Ahorro e inversiones</span></div>
       <div class="group">${saved.map(accountRow).join('')}</div>` : ''}
     <div class="section-h"><span>Tarjetas</span>${S.cards.length ? `<span>${Math.round(util * 100)}% del crédito usado</span>` : ''}</div>
@@ -734,14 +797,15 @@ function renderCards() {
         <div class="progress ${utilClass(s.util)}"><i style="width:${Math.min(s.util, 1) * 100}%"></i></div>
         <div class="meta"><span>Disponible ${fmt(s.available)} de ${fmt(s.limit)}</span><span>${c.closingDay ? 'Cierra el ' + c.closingDay : ''}</span></div>
       </button>
-      <button class="btn pay" data-action="pay-card" data-id="${esc(c.id)}">Pagar resumen${account(c.payFrom) ? ' desde ' + esc(account(c.payFrom).name) : ''}</button>
+      <button class="btn pay" data-action="pay-card" data-id="${esc(c.id)}">Pagar resumen${account(c.payFrom) ? ' desde ' + esc(account(c.payFrom).bank || account(c.payFrom).name) : ''}</button>
+      <button class="link center debt-link" data-action="open-debt" data-id="${esc(c.id)}">＋ Cargar cuotas o saldo que ya tenías</button>
       ${s.plans.length ? `
         <div class="section-h"><span>Cuotas · ${esc(c.name)}</span></div>
         <div class="group">${s.plans.map((p) => `
-          <button class="row with-icon" data-action="edit-expense" data-id="${esc(p.e.id)}">
+          <button class="row with-icon" data-action="${p.e.opening ? 'edit-debt' : 'edit-expense'}" data-id="${esc(p.e.id)}">
             ${icon(cat(p.e.category))}
             <span class="ri"><b>${esc(p.e.note || p.e.category)}</b>
-              <small>${p.fixed ? `Fijo · ${fmtCur(p.cuota, p.cur)}/mes · ${p.e.end ? 'hasta ' + ymLabel(p.e.end) : 'sin fin'}` : p.n > 1 ? (p.startsLater ? `Empieza el mes que viene · ${p.n} cuotas` : `Cuota ${p.current} de ${p.n}`) + ` · ${fmtCur(p.cuota, p.cur)}/mes` : 'Un pago'}</small></span>
+              <small>${p.fixed ? `Fijo · ${fmtCur(p.cuota, p.cur)}/mes · ${p.e.end ? 'hasta ' + ymLabel(p.e.end) : 'sin fin'}` : p.e.opening === 'balance' ? 'Saldo anterior' : p.n > 1 ? (p.startsLater ? `Empieza el mes que viene · ${p.n} cuotas` : `Cuota ${p.current} de ${p.n}`) + ` · ${fmtCur(p.cuota, p.cur)}/mes` : 'Un pago'}</small></span>
             <span class="amt">${fmtCur(p.rem, p.cur)}</span>
           </button>`).join('')}
         </div>` : ''}
@@ -1287,9 +1351,15 @@ function openCard(id = null) {
   $('c-name').value = c ? c.name : '';
   $('c-limit').value = c ? String(c.limit).replace('.', ',') : '';
   $('c-close').value = c && c.closingDay ? c.closingDay : '';
-  $('c-pay').innerHTML = `<option value="">Sin asociar</option>` + S.accounts.filter((a) => a.type === 'bank' || a.type === 'cash')
-    .map((a) => `<option value="${esc(a.id)}">${esc(a.name)}</option>`).join('');
-  $('c-pay').value = c && account(c.payFrom) ? c.payFrom : (S.accounts.find((a) => a.type === 'bank')?.id || '');
+  const local = S.accounts.filter((a) => !accUSD(a)), usd = S.accounts.filter(accUSD);
+  const opt = (a) => `<option value="${esc(a.id)}">${esc(accLabel(a))}</option>`;
+  $('c-pay').innerHTML = `<option value="">Sin cuenta (efectivo, Abitab…)</option>` + (usdMode() ? local : S.accounts).map(opt).join('');
+  $('c-pay').value = c && account(c.payFrom) ? c.payFrom : (local.find((a) => a.type === 'bank')?.id || '');
+  $('c-pay-label').textContent = usdMode() ? `${curName(S.cfg.currency)} desde` : 'Se paga desde';
+  $('c-pay-usd-row').hidden = !usdMode() || !usd.length;
+  $('c-pay-usd').innerHTML = `<option value="">La misma cuenta</option>` + usd.map(opt).join('');
+  const sib = () => { const p = account($('c-pay').value); return p && p.bank ? usd.find((a) => a.bank === p.bank) : null; };
+  $('c-pay-usd').value = c && account(c.payFromUSD) ? c.payFromUSD : c ? '' : (sib()?.id || '');
   $('c-delete-group').hidden = !c;
   $('csheet').showModal();
   if (!c) setTimeout(() => $('c-name').focus(), 120);
@@ -1301,9 +1371,10 @@ function saveCard() {
   if (!(limit > 0)) return toast('Ingresá el límite de crédito');
   const prev = card(S.editingCardId);
   upsertCard({ id: S.editingCardId || uid(), name, limit: r2(limit), closingDay: closing >= 1 && closing <= 31 ? closing : '',
-    payFrom: $('c-pay').value, since: prev?.since || new Date().toISOString() });
+    payFrom: $('c-pay').value, payFromUSD: usdMode() ? $('c-pay-usd').value : (prev?.payFromUSD || ''), since: prev?.since || new Date().toISOString() });
   $('csheet').close();
-  toast('Tarjeta guardada');
+  const nc = S.editingCardId ? null : S.cards[S.cards.length - 1];
+  toast('Tarjeta guardada', nc ? { label: '¿Ya la usabas?', fn: () => openDebt(nc.id) } : null);
 }
 
 // ---------- Hoja de cuenta ----------
@@ -1314,6 +1385,8 @@ function openAccount(id = null) {
   $('a-title').textContent = a ? a.name : 'Nueva cuenta';
   $('a-name').value = a ? a.name : '';
   $('a-type').value = a ? a.type : 'bank';
+  $('a-bank').value = a && a.bank ? a.bank : '';
+  $('a-bank-list').innerHTML = bankNames().map((b) => `<option value="${esc(b)}">`).join('');
   $('a-cur-row').hidden = !usdMode();
   $('a-cur').value = a ? (accUSD(a) ? USD : '') : '';
   $('a-cur').disabled = !!a;
@@ -1339,6 +1412,7 @@ function updateAccountForm() {
   const t = $('a-type').value, a = account(S.editingAccountId);
   $('a-goal-group').hidden = !(t === 'savings' || t === 'invest');
   $('a-yield-group').hidden = t === 'cash';
+  $('a-bank-row').hidden = t === 'cash';
   $('a-yield-btn').hidden = !a || t === 'cash';
   $('a-balance-label').textContent = t === 'invest' ? 'Valor actual' : 'Saldo actual';
   $('a-hint').textContent = a ? (t === 'invest' ? 'Si cambiás el valor, se registra la ganancia o pérdida sin tocar tu balance del mes.'
@@ -1347,10 +1421,11 @@ function updateAccountForm() {
 function saveAccount() {
   const name = $('a-name').value.trim(), type = $('a-type').value;
   const bal = parseAmount($('a-balance').value);
-  if (!name) return toast('Poné un nombre, por ejemplo "BROU caja de ahorro"');
+  if (!name) return toast('Poné un nombre, por ejemplo "Caja de ahorro pesos"');
   const goal = parseAmount($('a-goal').value);
   const tna = parseAmount($('a-tna').value);
-  const extra = { tna: type !== 'cash' && tna > 0 ? tna : '', goal: (type === 'savings' || type === 'invest') && goal > 0 ? r2(goal) : '', goalDate: (type === 'savings' || type === 'invest') ? $('a-goal-date').value : '' };
+  const bank = type === 'cash' ? '' : sameBank($('a-bank').value);
+  const extra = { bank, tna: type !== 'cash' && tna > 0 ? tna : '', goal: (type === 'savings' || type === 'invest') && goal > 0 ? r2(goal) : '', goalDate: (type === 'savings' || type === 'invest') ? $('a-goal-date').value : '' };
   const a = account(S.editingAccountId);
   if (a) {
     const cur = accountBalance(a);
@@ -1411,7 +1486,7 @@ function saveYield() {
 
 // ---------- Hoja de transferencia ----------
 function accOptions(sel) {
-  return S.accounts.map((a) => `<option value="${esc(a.id)}" ${a.id === sel ? 'selected' : ''}>${esc(a.name)}${accUSD(a) ? ' (US$)' : ''}</option>`).join('');
+  return S.accounts.map((a) => `<option value="${esc(a.id)}" ${a.id === sel ? 'selected' : ''}>${esc(accLabel(a))}${accUSD(a) ? ' (US$)' : ''}</option>`).join('');
 }
 function openTransfer(id = null, fromId = null) {
   if (S.accounts.length < 2) return toast('Agregá otra cuenta para transferir');
@@ -1457,6 +1532,10 @@ function saveTransfer() {
 }
 
 // ---------- Hoja de pago de resumen ----------
+function payDefault(c, cur) {
+  if (cur === USD && account(c.payFromUSD)) return c.payFromUSD;
+  return account(c.payFrom) ? c.payFrom : (account(CASH) || S.accounts[0]).id;   // sin cuenta asociada: se paga en efectivo (Abitab, Redpagos, cajero…)
+}
 function openPay(cardId, id = null) {
   const c = card(cardId);
   if (!c) return;
@@ -1468,7 +1547,7 @@ function openPay(cardId, id = null) {
   S.payMode = t ? 'other' : 'total';
   $('p-title').textContent = 'Pagar ' + c.name;
   $('p-cur').hidden = !usdMode() || !(st.hasUSD || (t && t.cur === USD));
-  $('p-from').innerHTML = accOptions(t ? t.from : account(c.payFrom) ? c.payFrom : (S.accounts.find((a) => a.type === 'bank') || S.accounts[0]).id);
+  $('p-from').innerHTML = accOptions(t ? t.from : payDefault(c, S.payCur));
   $('p-amount').value = t ? numStr(t.toAmount) : '';
   $('p-rate').value = t && t.rate ? numStr(t.rate) : numStr(S.cfg.usdRate);
   $('p-date').value = t ? t.date : isoDate(new Date());
@@ -1816,6 +1895,13 @@ document.addEventListener('click', (ev) => {
     'close-ysheet': () => $('ysheet').close(),
     'save-yield': saveYield,
     'save-name': () => saveName($('n-name').value),
+    'open-debt': () => openDebt(el.dataset.id),
+    'edit-debt': () => openDebt(null, el.dataset.id),
+    'close-dsheet': () => $('dsheet').close(),
+    'save-debt': saveDebt,
+    'delete-debt': () => { const id = S.editingDebt; $('dsheet').close(); undoable('Deuda eliminada', () => { S.expenses = S.expenses.filter((x) => x.id !== id); persist(); render(); }); },
+    'd-kind': () => { S.debtKind = el.dataset.kind; updateDebt(); },
+    'd-cur': () => { S.debtCur = el.dataset.cur; updateDebt(); },
     'new-cat': () => openCat(null, $('sheet').open ? S.selType : null),
     'edit-cat': () => openCat(el.dataset.id),
     'close-ksheet': () => $('ksheet').close(),
@@ -1835,7 +1921,7 @@ document.addEventListener('click', (ev) => {
       S.expenses.filter((e) => e.method === id).forEach((e) => upsertExpense({ ...e, method: CASH }));
       S.recurring.filter((r) => r.method === id).forEach((r) => upsertRecurring({ ...r, method: CASH }));
       S.transfers.filter((t) => t.from === id || t.to === id).forEach((t) => deleteTransfer(t.id));
-      S.cards.filter((c) => c.payFrom === id).forEach((c) => upsertCard({ ...c, payFrom: '' }));
+      S.cards.filter((c) => c.payFrom === id || c.payFromUSD === id).forEach((c) => upsertCard({ ...c, payFrom: c.payFrom === id ? '' : c.payFrom, payFromUSD: c.payFromUSD === id ? '' : c.payFromUSD }));
       deleteAccount(id);
       });
       $('asheet').close();
@@ -1854,7 +1940,7 @@ document.addEventListener('click', (ev) => {
     'delete-transfer': () => { const id = S.editingTransferId; $('tsheet').close(); $('psheet').close(); undoable('Eliminado', () => deleteTransfer(id)); },
     'pay-card': () => openPay(el.dataset.id),
     'close-psheet': () => $('psheet').close(),
-    'pay-cur': () => { S.payCur = el.dataset.cur; updatePay(true); },
+    'pay-cur': () => { S.payCur = el.dataset.cur; if (!S.editingTransferId) $('p-from').value = payDefault(card(S.payCard), S.payCur); updatePay(true); },
     'pay-mode': () => { S.payMode = el.dataset.mode; updatePay(true); },
     'save-pay': savePay,
     'setup-done': () => { S.cfg.setupPending = false; persist(); render(); },
@@ -1917,6 +2003,7 @@ document.addEventListener('input', (ev) => {
   if (['t-amount', 't-rate'].includes(ev.target.id)) updateTransfer();
   if (['p-amount', 'p-rate'].includes(ev.target.id)) updatePay();
   if (ev.target.id === 'y-balance') updateYield();
+  if (['d-amount', 'd-left'].includes(ev.target.id)) updateDebt();
   if (ev.target.id === 'k-name') { S.catDraft.name = ev.target.value; renderCatPreview(); }
   if (ev.target.id === 'k-emoji') { S.catDraft.emoji = firstGrapheme(ev.target.value) || S.catDraft.emoji; renderCatPreview(); }
   if (ev.target.id === 'k-custom-color') { S.catDraft.color = ev.target.value; renderCatPreview(); }
@@ -1933,9 +2020,13 @@ document.addEventListener('change', (ev) => {
   if (ev.target.id === 'p-from') updatePay();
   if (['i-date', 'i-desc', 'i-mode', 'i-amount', 'i-credit', 'i-acc'].includes(ev.target.id)) updateImport();
   if (ev.target.id === 'a-type') updateAccountForm();
+  if (ev.target.id === 'c-pay' && !S.editingCardId && !$('c-pay-usd-row').hidden) {
+    const p = account(ev.target.value), sib = p && p.bank ? S.accounts.find((x) => accUSD(x) && x.bank === p.bank) : null;
+    if (sib) $('c-pay-usd').value = sib.id;
+  }
   if (['f-rec', 'f-end-mode', 'f-end', 'f-date'].includes(ev.target.id)) updateRec();
 });
-['sheet', 'bsheet', 'csheet', 'asheet', 'tsheet', 'psheet', 'rsheet', 'isheet', 'ysheet', 'nsheet', 'ksheet'].forEach((id) => $(id).addEventListener('click', (ev) => { if (ev.target.id === id) ev.target.close(); }));
+['sheet', 'bsheet', 'csheet', 'asheet', 'tsheet', 'psheet', 'rsheet', 'isheet', 'ysheet', 'nsheet', 'ksheet', 'dsheet'].forEach((id) => $(id).addEventListener('click', (ev) => { if (ev.target.id === id) ev.target.close(); }));
 $('f-amount').addEventListener('keydown', (ev) => { if (ev.key === 'Enter') saveExpense(); });
 
 if ('serviceWorker' in navigator) {

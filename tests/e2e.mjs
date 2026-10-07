@@ -99,6 +99,44 @@ await page.click('#toast button'); await page.waitForTimeout(200);
 ok(await page.evaluate(() => S.cats.length === 1 && S.expenses.some((e) => e.category === 'Perro')), 'deshacer recupera la categoría');
 await page.evaluate(() => { S.expenses = S.expenses.filter((e) => e.category !== 'Perro'); S.cats = []; persist(); render(); });
 
+// 3d. Bancos con varias cajas y tarjeta con cuenta por moneda
+await page.evaluate(() => { S.cfg.usdRate = 40; persist(); });
+await page.click('[data-tab="cards"]');
+for (const [nm, cur] of [['Caja pesos', ''], ['Caja dólares', 'USD']]) {
+  await page.click('.quick [data-action="new-account"]');
+  await page.fill('#a-bank', 'BROU'); await page.fill('#a-name', nm);
+  if (cur) await page.selectOption('#a-cur', 'USD');
+  await page.fill('#a-balance', cur ? '500' : '20000'); await page.click('[data-action="save-account"]'); await page.waitForTimeout(150);
+}
+ok((await page.locator('#view-cards .section-h', { hasText: 'BROU' }).count()) === 1, 'agrupa las cajas del mismo banco');
+const ids = await page.evaluate(() => ({ p: S.accounts.find((a) => a.name === 'Caja pesos').id, u: S.accounts.find((a) => a.name === 'Caja dólares').id }));
+await page.click('.quick [data-action="new-card"]');
+await page.fill('#c-name', 'Visa BROU'); await page.fill('#c-limit', '50000');
+await page.selectOption('#c-pay', ids.p); await page.dispatchEvent('#c-pay', 'change');
+ok(await page.inputValue('#c-pay-usd') === ids.u, 'sugiere la caja en dólares del mismo banco');
+await page.click('[data-action="save-card"]');
+const vid = await page.evaluate(() => S.cards.find((c) => c.name === 'Visa BROU').id);
+ok(await page.evaluate((id) => card(id).payFrom && card(id).payFromUSD, vid), 'la tarjeta guarda una cuenta por moneda');
+await page.evaluate((id) => openPay(id), vid);
+ok(await page.inputValue('#p-from') === ids.p, 'pagar en pesos propone la caja en pesos');
+await page.evaluate(() => document.querySelector('#p-cur [data-cur="USD"]').click());
+ok(await page.inputValue('#p-from') === ids.u, 'pagar en dólares propone la caja en dólares');
+await page.evaluate(() => $('psheet').close());
+// Deuda que ya tenía la tarjeta
+const spentBefore = await page.evaluate(() => sumV(expensesOf(monthEntries(0)))), prevBefore = await page.evaluate(() => sumV(expensesOf(monthEntries(-1))));
+await page.evaluate((id) => openDebt(id), vid);
+await page.fill('#d-note', 'Heladera'); await page.fill('#d-amount', '2000'); await page.fill('#d-left', '4'); await page.fill('#d-total', '12');
+await page.click('[data-action="save-debt"]');
+await page.evaluate((id) => openDebt(id), vid);
+await page.click('#d-kind [data-kind="balance"]'); await page.fill('#d-amount', '5000'); await page.click('[data-action="save-debt"]');
+const st = await page.evaluate((id) => { const s = cardStats(card(id)); const p = s.plans.find((x) => x.e.note === 'Heladera'); return { debt: s.debt[''], fut: s.fut[''], cur: p.current, n: p.n, out: s.outstanding }; }, vid);
+ok(st.cur === 9 && st.n === 12, 'cuota en curso: 9 de 12 (faltan 4)');
+ok(st.debt === 7000 && st.fut === 6000 && st.out === 13000, 'deuda anterior: saldo + cuota del mes, y 3 cuotas futuras: ' + JSON.stringify(st));
+const spentAfter = await page.evaluate(() => sumV(expensesOf(monthEntries(0))));
+ok(Math.round(spentAfter - spentBefore) === 2000, 'solo la cuota del mes cuenta como gasto; el saldo anterior no');
+ok(await page.evaluate(() => sumV(expensesOf(monthEntries(-1)))) === prevBefore, 'las cuotas ya pagadas no aparecen en meses anteriores');
+await page.evaluate(() => { const ids2 = S.accounts.filter((a) => a.bank === 'BROU').map((a) => a.id); S.accounts = S.accounts.filter((a) => !ids2.includes(a.id)); S.transfers = S.transfers.filter((t) => !ids2.includes(t.to) && !ids2.includes(t.from)); S.expenses = S.expenses.filter((e) => !e.opening); S.cards = S.cards.filter((c) => c.name !== 'Visa BROU'); persist(); render(); });
+
 // 4. Foto del recibo
 await page.click('[data-tab="home"]');
 await page.click('#view-home >> text=Cena');
