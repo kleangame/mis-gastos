@@ -28,7 +28,7 @@ const CARD_COLORS = [
 const CURRENCIES = ['UYU', 'USD', 'ARS', 'EUR', 'BRL', 'CLP', 'MXN', 'COP', 'PEN'];
 const MONTHS = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
 const CASH = 'cash';           // id de la cuenta Efectivo (también usado por datos de versiones anteriores)
-const APP_VERSION = '8.4.0';
+const APP_VERSION = '8.5.0';
 const ACC_TYPES = {
   cash:    { label: 'Efectivo',  emoji: '💵', color: '#34C759' },
   bank:    { label: 'Banco',     emoji: '🏦', color: '#007AFF' },
@@ -294,7 +294,7 @@ function accountBalance(a) {
   const cur = accCur(a), today = isoDate(new Date()), sd = dateOnly(a.since);
   let b = Number(a.initial) || 0;
   for (const e of S.expenses) {
-    if (e.method !== a.id || e.date > today || !(e.date > sd || String(e.updated || '') > String(a.since || ''))) continue;
+    if (e.method !== a.id || e.date > today || e.noBalance || !(e.date > sd || String(e.updated || '') > String(a.since || ''))) continue;
     const v = conv(Number(e.amount), entryCur(e), cur, rateOf(e));
     b += isIncome(e) ? v : -v;
   }
@@ -303,7 +303,7 @@ function accountBalance(a) {
     for (let k = ymKey(r.start); k <= nowKey(); k++) {
       if (!ruleActive(r, k)) continue;
       const d = ruleDate(r, k);
-      if (d > today || d <= sd || d < dateOnly(r.created)) continue;
+      if (d > today || d <= sd || d < dateOnly(r.created) || (r.paidKey && k <= r.paidKey)) continue;
       const v = conv(Number(r.amount), entryCur(r), cur, Number(S.cfg.usdRate) || 1);
       b += isIncome(r) ? v : -v;
     }
@@ -1208,6 +1208,8 @@ function openExpense(id = null, fixed = false) {
   $('f-end-mode').value = rule && rule.end ? 'date' : '';
   $('f-end').value = rule && rule.end ? rule.end : '';
   $('f-note').value = e ? e.note || '' : '';
+  $('f-paid').checked = rule ? !!rule.paidKey : !!(e && e.noBalance);
+  S.paidTouched = !!e;
   const valid = (m) => account(m) || card(m);
   S.selMethod = e && valid(e.method) ? e.method : valid(S.cfg.lastMethod) ? S.cfg.lastMethod : CASH;
   if (!e && account(S.selMethod)) S.selCur = accCur(account(S.selMethod));
@@ -1257,7 +1259,18 @@ function renderCatGrid() {
     `<button type="button" class="${c.name === S.selCat ? 'on' : ''}" data-action="pick-cat" data-cat="${esc(c.name)}">${icon(c)}${esc(c.name)}</button>`).join('')
     + `<button type="button" class="newcat" data-action="new-cat">${icon({ emoji: '＋', color: 'var(--fill)' })}Nueva</button>`;
 }
+function updatePaid() {
+  const rec = $('f-rec').checked, date = $('f-date').value || isoDate(new Date()), today = isoDate(new Date());
+  const acc = account(S.selMethod);
+  const show = !!acc && (rec ? monthKey(parseLocal(date)) <= nowKey() && date <= today : date <= today);
+  $('f-paid-row').hidden = !show;
+  $('f-paid-label').textContent = rec ? 'Este mes ya está descontado' : 'Ya descontado del saldo';
+  // Sugerencia: lo anterior al día en que cargaste el saldo de la cuenta ya está reflejado.
+  if (show && !S.paidTouched) $('f-paid').checked = date < dateOnly(acc.since);
+  $('f-paid-hint').hidden = !show || !$('f-paid').checked;
+}
 function updateRec() {
+  updatePaid();
   $('f-receipt-group').hidden = $('f-rec').checked;
   const rec = $('f-rec').checked, byDate = $('f-end-mode').value === 'date';
   $('f-end-row').hidden = !rec;
@@ -1315,7 +1328,8 @@ function saveExpense() {
     if (S.editingId && !S.editingRule) deleteExpense(S.editingId);   // un gasto común pasó a fijo
     const prevRule = S.editingRule ? S.recurring.find((x) => x.id === S.editingId) : null;
     upsertRecurring({ id: S.editingRule ? S.editingId : uid(), created: prevRule?.created || new Date().toISOString(), type: S.selType, amount: r2(amount), category: S.selCat,
-      note: $('f-note').value.trim(), method, day: d.getDate(), start, end, ...cur, rate: '' });
+      note: $('f-note').value.trim(), method, day: d.getDate(), start, end, ...cur, rate: '',
+      paidKey: !$('f-paid-row').hidden && $('f-paid').checked ? monthKey(d) : '' });
     $('sheet').close(); render();
     return toast(wasEditing ? 'Fijo actualizado' : 'Fijo mensual guardado');
   }
@@ -1326,7 +1340,8 @@ function saveExpense() {
   else if (S.pendingReceipt === 'delete') delReceipt(id).then(render);
   S.pendingReceipt = null;
   upsertExpense({ id, type: S.selType, amount: r2(amount), category: S.selCat, date,
-    note: $('f-note').value.trim(), method, installments, ...cur, rate: usd ? r2(rate) : '' });
+    note: $('f-note').value.trim(), method, installments, ...cur, rate: usd ? r2(rate) : '',
+    noBalance: !$('f-paid-row').hidden && $('f-paid').checked });
   $('sheet').close();
   const d = parseLocal(date);
   S.offset = Math.min(0, monthKey(d) - nowKey());
@@ -2024,6 +2039,7 @@ document.addEventListener('change', (ev) => {
     const p = account(ev.target.value), sib = p && p.bank ? S.accounts.find((x) => accUSD(x) && x.bank === p.bank) : null;
     if (sib) $('c-pay-usd').value = sib.id;
   }
+  if (ev.target.id === 'f-paid') { S.paidTouched = true; updatePaid(); }
   if (['f-rec', 'f-end-mode', 'f-end', 'f-date'].includes(ev.target.id)) updateRec();
 });
 ['sheet', 'bsheet', 'csheet', 'asheet', 'tsheet', 'psheet', 'rsheet', 'isheet', 'ysheet', 'nsheet', 'ksheet', 'dsheet'].forEach((id) => $(id).addEventListener('click', (ev) => { if (ev.target.id === id) ev.target.close(); }));

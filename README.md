@@ -20,6 +20,7 @@ App web instalable (PWA) para registrar gastos, ingresos, cuentas, tarjetas y pr
 - Categorías propias de gasto o ingreso, con el nombre, emoji y color de fondo que quieras (Ajustes → Mis categorías, o «Nueva» al cargar un gasto).
 - Bancos con varias cajas: cada cuenta puede indicar su banco y se agrupan juntas. Una tarjeta puede pagarse desde una caja en pesos y otra en dólares, o sin cuenta (efectivo, Abitab, Redpagos).
 - Deuda anterior de tarjetas: cargá compras en cuotas en curso (cuotas que faltan) y el saldo ya facturado; cuentan como deuda sin inflar tus gastos de meses pasados.
+- «Ya descontado del saldo»: registrá gastos o fijos que pagaste antes de empezar a usar la app sin que se resten otra vez del saldo de la cuenta.
 - Saludo con tu nombre o apodo (opcional; se pregunta la primera vez y se cambia en Ajustes).
 
 ## Seguridad en el celular

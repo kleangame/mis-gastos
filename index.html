@@ -85,8 +85,10 @@
     <p class="hint sheet-hint" id="f-rec-hint" hidden></p>
     <div class="group">
       <label class="row"><span id="f-date-label">Fecha</span><input id="f-date" type="date"></label>
+      <label class="row" id="f-paid-row" hidden><span id="f-paid-label">Ya descontado del saldo</span><input id="f-paid" type="checkbox" class="switch"></label>
       <label class="row"><span>Nota</span><input id="f-note" type="text" maxlength="80" placeholder="Opcional"></label>
     </div>
+    <p class="hint sheet-hint" id="f-paid-hint" hidden>Queda registrado, pero no cambia el saldo de la cuenta: usalo para lo que pagaste antes de empezar a usar la app.</p>
     <div class="group" id="f-receipt-group">
       <button type="button" class="row blue" data-action="add-receipt" id="f-receipt-add">📎 Adjuntar foto del recibo<span></span></button>
       <div class="row receipt-prev" id="f-receipt-prev" hidden>

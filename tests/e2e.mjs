@@ -137,6 +137,25 @@ ok(Math.round(spentAfter - spentBefore) === 2000, 'solo la cuota del mes cuenta 
 ok(await page.evaluate(() => sumV(expensesOf(monthEntries(-1)))) === prevBefore, 'las cuotas ya pagadas no aparecen en meses anteriores');
 await page.evaluate(() => { const ids2 = S.accounts.filter((a) => a.bank === 'BROU').map((a) => a.id); S.accounts = S.accounts.filter((a) => !ids2.includes(a.id)); S.transfers = S.transfers.filter((t) => !ids2.includes(t.to) && !ids2.includes(t.from)); S.expenses = S.expenses.filter((e) => !e.opening); S.cards = S.cards.filter((c) => c.name !== 'Visa BROU'); persist(); render(); });
 
+// 3e. Gastos ya descontados del saldo (antes de empezar a usar la app)
+const cashBefore = await page.evaluate(() => accountBalance(account(CASH)));
+await page.evaluate(() => openExpense());
+await page.fill('#f-amount', '25000'); await page.click('#f-cats [data-cat="Casa"]');
+await page.evaluate(() => { const b = [...document.querySelectorAll('#f-from [data-action="pick-from"]')].find((x) => x.dataset.id === CASH); b.click(); });
+ok(await page.locator('#f-paid-row').isVisible(), 'ofrece marcar como ya descontado');
+await page.check('#f-paid'); await page.dispatchEvent('#f-paid', 'change');
+await page.click('[data-action="save-expense"]'); await page.waitForTimeout(150);
+const pd = await page.evaluate(() => ({ bal: accountBalance(account(CASH)), inMonth: monthEntries(0).some((e) => e.amount === 25000) }));
+ok(pd.bal === cashBefore && pd.inMonth, 'queda en los gastos del mes sin tocar el saldo');
+await page.evaluate(() => { openExpense(); });
+await page.fill('#f-amount', '30000'); await page.check('#f-rec'); await page.dispatchEvent('#f-rec', 'change');
+await page.evaluate(() => { const b = [...document.querySelectorAll('#f-from [data-action="pick-from"]')].find((x) => x.dataset.id === CASH); b.click(); });
+await page.check('#f-paid'); await page.dispatchEvent('#f-paid', 'change');
+await page.click('[data-action="save-expense"]'); await page.waitForTimeout(150);
+const pr = await page.evaluate(() => ({ bal: accountBalance(account(CASH)), rule: S.recurring.find((r) => r.amount === 30000) }));
+ok(pr.bal === cashBefore && pr.rule && pr.rule.paidKey, 'fijo: el pago de este mes no descuenta, los próximos sí');
+await page.evaluate(() => { S.expenses = S.expenses.filter((e) => e.amount !== 25000); S.recurring = S.recurring.filter((r) => r.amount !== 30000); persist(); render(); });
+
 // 4. Foto del recibo
 await page.click('[data-tab="home"]');
 await page.click('#view-home >> text=Cena');
