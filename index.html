@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#F2F2F7" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <title>Mis Gastos</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon-192.png">
+  <link rel="apple-touch-icon" href="icon-192.png">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="app">
+    <section class="view" id="view-home"></section>
+    <section class="view" id="view-list" hidden></section>
+    <section class="view" id="view-cards" hidden></section>
+    <section class="view" id="view-budgets" hidden></section>
+    <section class="view" id="view-settings" hidden></section>
+  </div>
+
+  <nav class="tabbar">
+    <button data-tab="home" class="on">
+      <svg viewBox="0 0 24 24"><path d="M4 13h6V4H4v9zm0 7h6v-5H4v5zm10 0h6v-9h-6v9zm0-16v5h6V4h-6z"/></svg>
+      <span>Resumen</span>
+    </button>
+    <button data-tab="list">
+      <svg viewBox="0 0 24 24"><path d="M4 6h2v2H4zm4 0h12v2H8zM4 11h2v2H4zm4 0h12v2H8zm-4 5h2v2H4zm4 0h12v2H8z"/></svg>
+      <span>Movimientos</span>
+    </button>
+    <button data-tab="cards">
+      <svg viewBox="0 0 24 24"><path d="M20 4H4a2 2 0 00-2 2v12a2 2 0 002 2h16a2 2 0 002-2V6a2 2 0 00-2-2zm0 14H4v-6h16v6zm0-10H4V6h16v2z"/></svg>
+      <span>Tarjetas</span>
+    </button>
+    <button data-tab="budgets">
+      <svg viewBox="0 0 24 24"><path d="M12 2a10 10 0 100 20 10 10 0 000-20zm1 15.9V19h-2v-1.1c-1.7-.3-3-1.4-3.1-3h1.9c.1.9.8 1.5 2.2 1.5 1.5 0 1.9-.7 1.9-1.2 0-.7-.4-1.3-2.3-1.7-2.1-.5-3.5-1.3-3.5-3 0-1.4 1.1-2.4 2.9-2.7V5h2v1.1c1.6.4 2.4 1.6 2.5 2.9h-1.9c-.1-.9-.6-1.5-1.9-1.5-1.2 0-1.9.5-1.9 1.3 0 .7.5 1.1 2.3 1.6 1.8.4 3.5 1.2 3.5 3.1 0 1.4-1 2.5-2.6 2.9z"/></svg>
+      <span>Presupuestos</span>
+    </button>
+    <button data-tab="settings">
+      <svg viewBox="0 0 24 24"><path d="M19.4 13a7.5 7.5 0 000-2l2.1-1.6-2-3.5-2.5 1a7.4 7.4 0 00-1.7-1L15 3h-4l-.4 2.7a7.4 7.4 0 00-1.7 1l-2.5-1-2 3.5L6.6 11a7.5 7.5 0 000 2l-2.1 1.6 2 3.5 2.5-1c.5.4 1.1.7 1.7 1L11 21h4l.4-2.7c.6-.3 1.2-.6 1.7-1l2.5 1 2-3.5-2.2-1.8zM13 15.5a3.5 3.5 0 110-7 3.5 3.5 0 010 7z"/></svg>
+      <span>Ajustes</span>
+    </button>
+  </nav>
+
+  <!-- Hoja para agregar / editar gasto -->
+  <dialog id="sheet" class="sheet">
+    <div class="grabber"></div>
+    <header class="sheet-head">
+      <button type="button" class="link" data-action="close-sheet">Cancelar</button>
+      <strong id="sheet-title">Nuevo gasto</strong>
+      <button type="button" class="link bold" data-action="save-expense">Guardar</button>
+    </header>
+    <div class="segmented" id="f-type">
+      <button type="button" data-action="set-type" data-type="expense" class="on">Gasto</button>
+      <button type="button" data-action="set-type" data-type="income">Ingreso</button>
+    </div>
+    <div class="amount-wrap">
+      <span id="cur-symbol">$</span>
+      <input id="f-amount" inputmode="decimal" placeholder="0" autocomplete="off">
+    </div>
+    <div id="f-cats" class="cat-grid"></div>
+    <div class="group" id="f-pay-group">
+      <label class="row"><span>Medio de pago</span><select id="f-method"></select></label>
+      <label class="row" id="f-inst-row" hidden><span>Cuotas</span><select id="f-inst"></select></label>
+    </div>
+    <p class="hint sheet-hint" id="f-inst-hint" hidden></p>
+    <div class="group">
+      <label class="row"><span>Fijo todos los meses</span><input id="f-rec" type="checkbox" class="switch"></label>
+      <label class="row" id="f-end-row" hidden><span>Termina</span>
+        <select id="f-end-mode"><option value="">Nunca</option><option value="date">En un mes</option></select></label>
+      <label class="row" id="f-end-month-row" hidden><span>Último mes</span><input id="f-end" type="month"></label>
+    </div>
+    <p class="hint sheet-hint" id="f-rec-hint" hidden></p>
+    <div class="group">
+      <label class="row"><span id="f-date-label">Fecha</span><input id="f-date" type="date"></label>
+      <label class="row"><span>Nota</span><input id="f-note" type="text" maxlength="80" placeholder="Opcional"></label>
+    </div>
+    <div class="group" id="f-delete-group" hidden>
+      <button type="button" class="row danger center" data-action="delete-expense">Eliminar gasto</button>
+    </div>
+  </dialog>
+
+  <!-- Hoja para presupuesto -->
+  <dialog id="bsheet" class="sheet small">
+    <div class="grabber"></div>
+    <header class="sheet-head">
+      <button type="button" class="link" data-action="close-bsheet">Cancelar</button>
+      <strong id="b-title">Presupuesto</strong>
+      <button type="button" class="link bold" data-action="save-budget">Guardar</button>
+    </header>
+    <p class="hint center">Límite mensual para esta categoría</p>
+    <div class="amount-wrap">
+      <span class="cur-symbol-b">$</span>
+      <input id="b-amount" inputmode="decimal" placeholder="0" autocomplete="off">
+    </div>
+    <div class="group">
+      <button type="button" class="row danger center" data-action="clear-budget">Quitar presupuesto</button>
+    </div>
+  </dialog>
+
+  <!-- Hoja para tarjeta -->
+  <dialog id="csheet" class="sheet small">
+    <div class="grabber"></div>
+    <header class="sheet-head">
+      <button type="button" class="link" data-action="close-csheet">Cancelar</button>
+      <strong id="c-title">Nueva tarjeta</strong>
+      <button type="button" class="link bold" data-action="save-card">Guardar</button>
+    </header>
+    <div class="group" style="margin-top:12px">
+      <label class="row"><span>Nombre</span><input id="c-name" type="text" maxlength="30" placeholder="Visa BROU"></label>
+      <label class="row"><span>Límite</span><input id="c-limit" inputmode="decimal" placeholder="100.000"></label>
+      <label class="row"><span>Día de cierre</span><input id="c-close" inputmode="numeric" placeholder="Opcional (1-31)"></label>
+    </div>
+    <p class="hint sheet-hint">Con el día de cierre, las compras hechas después de esa fecha empiezan a pagarse el mes siguiente.</p>
+    <div class="group" id="c-delete-group" hidden>
+      <button type="button" class="row danger center" data-action="delete-card">Eliminar tarjeta</button>
+    </div>
+  </dialog>
+
+  <div id="toast" class="toast" hidden></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
