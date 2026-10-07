@@ -27,9 +27,10 @@ const CARD_COLORS = [
 const CURRENCIES = ['UYU', 'USD', 'ARS', 'EUR', 'BRL', 'CLP', 'MXN', 'COP', 'PEN'];
 const MONTHS = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
 const CASH = 'cash';           // id de la cuenta Efectivo (también usado por datos de versiones anteriores)
-const APP_VERSION = '6.3.0';
+const APP_VERSION = '7.0.0';
 // Hoja plantilla con el script ya incluido (modo simple). /copy abre «Hacer una copia» en Google Sheets.
-const CENTRAL_URL = 'https://script.google.com/macros/s/AKfycbyoU8AzSSD3oflbJBEqjcdl-SK0ByHak7hqwezsMzZZLverdfsSfxwIfxt84mWirxRD2Q/exec';
+// Script central de v6.2–6.3, ya apagado: si quedó conectado, se desconecta.
+const OLD_CENTRAL_URL = 'https://script.google.com/macros/s/AKfycbyoU8AzSSD3oflbJBEqjcdl-SK0ByHak7hqwezsMzZZLverdfsSfxwIfxt84mWirxRD2Q/exec';
 const TEMPLATE_URL = 'https://docs.google.com/spreadsheets/d/1SzK5xBkthlZ3HhRSYwWOv12acXDUh5jHQaxg7LRNZi4/copy';
 const ACC_TYPES = {
   cash:    { label: 'Efectivo',  emoji: '💵', color: '#34C759' },
@@ -469,6 +470,11 @@ function renderCards() {
       <p>Poné cuánto efectivo tenés hoy, agregá tus cuentas del banco y asociá cada tarjeta a la cuenta desde la que la pagás. Lo que cargaste antes queda en Efectivo.</p>
       <div class="actions"><button class="btn small" data-action="edit-account" data-id="${CASH}">Empezar</button><button class="link" data-action="setup-done">Listo</button></div>
     </div>` : ''}
+    ${backupDue() ? `<div class="card setup">
+      <b>Guardá una copia</b>
+      <p>${S.cfg.lastBackup ? `Tu última copia es de ${ago(S.cfg.lastBackup).toLowerCase()}.` : 'Todavía no guardaste ninguna copia.'} Tus datos están solo en este celular: si lo perdés, se pierden.</p>
+      <div class="actions"><button class="btn small" data-action="backup">Guardar copia</button><button class="link" data-action="backup-later">Más tarde</button></div>
+    </div>` : ''}
     <div class="quick">
       <button data-action="new-account"><span>＋</span>Cuenta</button>
       <button data-action="new-transfer"><span>⇄</span>Transferir</button>
@@ -567,39 +573,29 @@ function renderSettings() {
     : ['', 'Solo en este dispositivo'];
   $('view-settings').innerHTML = `
     ${header('Ajustes', null)}
-    <div class="section-h"><span>Google Sheets</span></div>
+    <div class="section-h"><span>Copia de seguridad</span></div>
     <div class="group">
-      <div class="row"><span>Estado</span><span class="val"><i class="status-dot ${st[0]}"></i>${esc(st[1])}</span></div>
-      ${S.queue.length ? `<div class="row"><span>Cambios pendientes</span><span class="val">${S.queue.length}</span></div>` : ''}
+      <div class="row"><span>Última copia</span><span class="val">${S.cfg.lastBackup ? ago(S.cfg.lastBackup) : 'Nunca'}</span></div>
     </div>
-    ${connected()
-      ? `<button class="btn" data-action="sync-now" ${S.syncing ? 'disabled' : ''}>Sincronizar ahora</button>
-         ${S.cfg.sheetUrl ? `<div class="group"><a class="row blue" href="${esc(S.cfg.sheetUrl)}" target="_blank" rel="noopener">Abrir mi hoja<span></span></a></div>` : ''}
-         ${isCentralConn() ? `<div class="group">
-           <button class="row blue" data-action="rotate-key">Cambiar clave<span></span></button>
-           <button class="row danger" data-action="delete-sheet">Eliminar mi hoja</button>
-         </div>
-         <p class="footer-note">Tu hoja la crea y administra la cuenta Mis Gastos, que técnicamente puede ver su contenido. Si cambiás la clave, los otros celulares conectados se desconectan.</p>` : ''}
-         <div class="group"><button class="row danger center" data-action="disconnect">Desconectar hoja</button></div>`
-      : `<div class="card steps">
-          <b>Guardá tus datos en tu Google Sheet</b>
-          <p class="steps-sub">Poné tu Gmail y te creamos una hoja compartida con vos. Se sincroniza sola.</p>
-          <label class="field-label" for="cfg-email">Tu Gmail</label>
-          <input id="cfg-email" class="field" type="email" inputmode="email" autocomplete="email" autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="go" placeholder="nombre@gmail.com" value="${esc(S.cfg.email || '')}" ${S.emailError ? 'aria-invalid="true"' : ''}>
-          ${S.emailError ? `<p class="field-error">${esc(S.emailError)}</p>` : ''}
-          <button class="btn" data-action="create-sheet" ${S.creating ? 'disabled' : ''}>${S.creating ? 'Creando…' : 'Crear mi hoja'}</button>
-          <p class="steps-note">La hoja la crea y administra la cuenta Mis Gastos, que técnicamente puede ver su contenido. No guardamos tu correo: solo se usa para compartirte la hoja. Si querés que sea 100% tuya, usá la configuración avanzada desde una compu.</p>
-          <button class="link" data-action="paste-code">¿Ya tenés una hoja? Pegá el código o abrí su link</button>
+    <button class="btn" data-action="backup">Guardar copia cifrada</button>
+    <div class="group"><button class="row blue center" data-action="restore">Restaurar una copia</button></div>
+    <p class="footer-note">Tus datos viven solo en este celular. La copia se cifra con tu contraseña antes de salir del teléfono y la guardás donde quieras: Drive, Dropbox, tu correo. Nadie más puede abrirla, ni nosotros. Si olvidás la contraseña, no hay forma de recuperarla.</p>
+    <details class="adv" ${connected() ? 'open' : ''}>
+      <summary>Sincronizar con tu propia hoja de Google (avanzado)</summary>
+      ${connected() ? `<div class="group">
+          <div class="row"><span>Estado</span><span class="val"><i class="status-dot ${st[0]}"></i>${esc(st[1])}</span></div>
+          ${S.queue.length ? `<div class="row"><span>Cambios pendientes</span><span class="val">${S.queue.length}</span></div>` : ''}
         </div>
-        <details class="adv">
-          <summary>Configuración avanzada</summary>
-          <p class="footer-note">Para usar tu propia hoja (se configura desde una compu): <a href="${TEMPLATE_URL}" target="_blank" rel="noopener">copiá la plantilla</a>, implementá el script y usá el menú Mis Gastos → Conectar celular. O pegá la URL y la clave acá.</p>
-          <div class="group">
-            <label class="row"><span>URL del script</span><input id="cfg-url" type="url" placeholder="https://script.google.com/…" value="${esc(S.cfg.url)}"></label>
-            <label class="row"><span>Clave</span><input id="cfg-token" type="password" placeholder="Tu clave secreta" value="${esc(S.cfg.token)}"></label>
-          </div>
-          <button class="btn" data-action="connect">Conectar hoja</button>
-        </details>`}
+        <button class="btn" data-action="sync-now" ${S.syncing ? 'disabled' : ''}>Sincronizar ahora</button>
+        <div class="group"><button class="row danger center" data-action="disconnect">Desconectar hoja</button></div>`
+      : `<p class="footer-note">Se configura desde una compu y la hoja es 100% tuya: <a href="${TEMPLATE_URL}" target="_blank" rel="noopener">copiá la plantilla</a>, implementá el script y usá el menú Mis Gastos → Conectar celular.</p>
+        <button class="link" data-action="paste-code">Pegar código de conexión</button>
+        <div class="group">
+          <label class="row"><span>URL del script</span><input id="cfg-url" type="url" placeholder="https://script.google.com/…" value="${esc(S.cfg.url)}"></label>
+          <label class="row"><span>Clave</span><input id="cfg-token" type="password" placeholder="Tu clave secreta" value="${esc(S.cfg.token)}"></label>
+        </div>
+        <button class="btn" data-action="connect">Conectar hoja</button>`}
+    </details>
     <div class="section-h"><span>General</span></div>
     <div class="group">
       <label class="row"><span>Moneda</span>
@@ -611,12 +607,10 @@ function renderSettings() {
     ${usdMode() ? `<p class="footer-note">Podés cargar movimientos en dólares. Se convierten a ${esc(S.cfg.currency)} con la cotización del día en que los cargás; los fijos en dólares usan la cotización actual.</p>` : ''}
     <div class="section-h"><span>Datos</span></div>
     <div class="group">
-      <button class="row blue" data-action="backup">Guardar copia de seguridad<span></span></button>
-      <button class="row blue" data-action="restore">Restaurar copia de seguridad<span></span></button>
       <button class="row blue" data-action="export">Exportar CSV<span></span></button>
       <button class="row danger" data-action="wipe">Borrar datos de este dispositivo</button>
     </div>
-    <p class="footer-note">${S.expenses.length} movimientos, ${S.recurring.length} fijos, ${S.accounts.length} cuentas y ${S.cards.length} tarjetas guardados. Borrar los datos locales no toca tu Google Sheet.</p>
+    <p class="footer-note">${S.expenses.length} movimientos, ${S.recurring.length} fijos, ${S.accounts.length} cuentas y ${S.cards.length} tarjetas guardados. Si borrás los datos del celular, solo los recuperás con una copia.</p>
     <div class="section-h"><span>Acerca de</span></div>
     <div class="group">
       <div class="row"><span>Versión</span><span class="val" id="app-version">${APP_VERSION}</span></div>
@@ -729,43 +723,6 @@ async function sync(manual = false) {
   }
   if (S.queue.length && !S.syncError) sync();
 }
-// Modo central: el script de Mis Gastos crea una hoja nueva y la comparte con el Gmail del usuario.
-async function createSheet() {
-  if (S.creating) return;
-  const email = $('cfg-email').value.trim().toLowerCase();
-  S.cfg.email = email; S.emailError = ''; persist();
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { S.emailError = email ? 'Revisá el correo, parece incompleto' : 'Escribí tu Gmail'; render(); $('cfg-email').focus(); return; }
-  if (!CENTRAL_URL) return toast('Todavía no está disponible. Usá la configuración avanzada.');
-  S.creating = true; render();
-  try {
-    const res = await fetch(CENTRAL_URL, { method: 'POST', body: JSON.stringify({ action: 'register', email }) });
-    const d = await res.json();
-    if (!d.ok) throw new Error(d.error || 'No se pudo crear la hoja');
-    S.cfg.sheetUrl = d.sheetUrl;
-    S.creating = false;
-    await connectWith(CENTRAL_URL, d.token);
-    if (connected()) toast('¡Listo! Tu hoja quedó creada y compartida con ' + email);
-  } catch (e) {
-    S.emailError = e.message === 'Failed to fetch' ? 'Sin conexión. Probá de nuevo.' : e.message;
-  } finally { S.creating = false; render(); }
-}
-const isCentralConn = () => connected() && S.cfg.url === CENTRAL_URL;
-async function rotateKey() {
-  if (!confirm('¿Cambiar la clave? Los otros celulares conectados a tu hoja se van a desconectar.')) return;
-  try {
-    const d = await api({ action: 'rotate' });
-    S.cfg.token = d.token; persist(); toast('Clave cambiada. El link nuevo está en la pestaña Conectar de tu hoja.');
-  } catch (e) { toast(e.message === 'Failed to fetch' ? 'Sin conexión. Probá de nuevo.' : e.message); }
-}
-async function deleteMySheet() {
-  if (!confirm('¿Eliminar tu hoja de Google Sheets? Se borran los datos guardados allí. Los de este celular quedan.')) return;
-  if (!confirm('Esto no se puede deshacer. ¿Eliminar igual?')) return;
-  try {
-    await api({ action: 'delete' });
-    S.cfg.url = ''; S.cfg.token = ''; S.cfg.sheetUrl = ''; S.queue = []; S.syncError = null; persist(); render();
-    toast('Tu hoja fue eliminada');
-  } catch (e) { toast(e.message === 'Failed to fetch' ? 'Sin conexión. Probá de nuevo.' : e.message); }
-}
 async function connect() { return connectWith($('cfg-url').value.trim(), $('cfg-token').value.trim()); }
 // Código de conexión que muestra la hoja: base64 (web-safe) de "url|clave".
 function decodeCode(code) {
@@ -783,35 +740,105 @@ async function connectFromHash() {
   await connectWith(decodeURIComponent(m[1]), decodeURIComponent(m[2]));
   if (connected()) toast('¡Listo! Tu app quedó conectada a tu hoja');
 }
-// Copia de seguridad: un archivo JSON con todo lo guardado en este dispositivo.
-function backup() {
-  const data = { app: 'mis-gastos', version: APP_VERSION, date: new Date().toISOString(),
+// ---------- Copia de seguridad cifrada ----------
+// AES-GCM 256 con clave derivada de la contraseña (PBKDF2-SHA256). Todo pasa en el celular.
+const KDF_ITER = 310000;
+const b64 = (buf) => {
+  const u = new Uint8Array(buf); let bin = '';
+  for (let i = 0; i < u.length; i += 0x8000) bin += String.fromCharCode.apply(null, u.subarray(i, i + 0x8000));
+  return btoa(bin);
+};
+const unb64 = (str) => Uint8Array.from(atob(str), (c) => c.charCodeAt(0));
+async function deriveKey(pass, salt, iter) {
+  const base = await crypto.subtle.importKey('raw', new TextEncoder().encode(pass), 'PBKDF2', false, ['deriveKey']);
+  return crypto.subtle.deriveKey({ name: 'PBKDF2', salt, iterations: iter, hash: 'SHA-256' }, base, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+}
+async function encryptJSON(obj, pass) {
+  const salt = crypto.getRandomValues(new Uint8Array(16)), iv = crypto.getRandomValues(new Uint8Array(12));
+  const key = await deriveKey(pass, salt, KDF_ITER);
+  const data = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, new TextEncoder().encode(JSON.stringify(obj)));
+  return { app: 'mis-gastos', enc: 'AES-GCM-256/PBKDF2-SHA256', v: 1, iter: KDF_ITER, salt: b64(salt), iv: b64(iv), data: b64(data) };
+}
+async function decryptJSON(box, pass) {
+  const key = await deriveKey(pass, unb64(box.salt), box.iter || KDF_ITER);
+  const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: unb64(box.iv) }, key, unb64(box.data));
+  return JSON.parse(new TextDecoder().decode(plain));
+}
+// Pide una contraseña en una hoja propia (no en prompt, para que no se vea).
+function askPassword({ title, hint, confirm2 = false }) {
+  return new Promise((resolve) => {
+    const d = $('pwsheet');
+    $('pw-title').textContent = title; $('pw-hint').textContent = hint;
+    $('pw-1').value = ''; $('pw-2').value = ''; $('pw-err').textContent = '';
+    $('pw-2row').hidden = !confirm2;
+    const done = (v) => { d.close(); $('pw-ok').onclick = $('pw-cancel').onclick = d.onclose = null; resolve(v); };
+    $('pw-ok').onclick = () => {
+      const p1 = $('pw-1').value;
+      if (confirm2 && p1.length < 8) return ($('pw-err').textContent = 'Usá al menos 8 caracteres');
+      if (confirm2 && p1 !== $('pw-2').value) return ($('pw-err').textContent = 'Las contraseñas no coinciden');
+      if (!p1) return ($('pw-err').textContent = 'Escribí la contraseña');
+      done(p1);
+    };
+    $('pw-cancel').onclick = () => done(null);
+    d.onclose = () => resolve(null);
+    d.onkeydown = (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); $('pw-ok').click(); } };
+    d.showModal(); setTimeout(() => $('pw-1').focus(), 50);
+  });
+}
+function snapshot() {
+  return { app: 'mis-gastos', version: APP_VERSION, date: new Date().toISOString(),
     expenses: S.expenses, budgets: S.budgets, cards: S.cards, recurring: S.recurring, accounts: S.accounts, transfers: S.transfers,
     cfg: { currency: S.cfg.currency, usdRate: S.cfg.usdRate } };
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(new Blob([JSON.stringify(data, null, 1)], { type: 'application/json' }));
-  a.download = `mis-gastos-${isoDate(new Date())}.json`; a.click();
-  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
-  toast('Copia guardada');
+}
+async function backup() {
+  const pass = await askPassword({ title: 'Contraseña de la copia', hint: 'La vas a necesitar para restaurar. No la guardamos en ningún lado.', confirm2: true });
+  if (!pass) return;
+  toast('Cifrando…');
+  const box = await encryptJSON(snapshot(), pass);
+  const name = `mis-gastos-${isoDate(new Date())}.json`;
+  const file = new File([JSON.stringify(box)], name, { type: 'application/json' });
+  let saved = false;
+  if (navigator.canShare && navigator.canShare({ files: [file] })) {
+    try { await navigator.share({ files: [file], title: 'Copia de Mis Gastos' }); saved = true; }
+    catch (e) { if (e.name === 'AbortError') return toast('Copia cancelada'); }
+  }
+  if (!saved) {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(file); a.download = name; a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  }
+  S.cfg.lastBackup = new Date().toISOString(); persist(); render();
+  toast('Copia cifrada guardada');
 }
 function restore() {
   const inp = document.createElement('input');
   inp.type = 'file'; inp.accept = '.json,application/json';
   inp.onchange = async () => {
-    try {
-      const d = JSON.parse(await inp.files[0].text());
-      if (d.app !== 'mis-gastos' || !Array.isArray(d.expenses)) throw new Error('formato');
-      if (!confirm(`¿Reemplazar los datos de este dispositivo por la copia del ${new Date(d.date).toLocaleDateString('es-UY')}?`)) return;
-      S.expenses = d.expenses; S.budgets = d.budgets || {}; S.cards = d.cards || []; S.recurring = d.recurring || [];
-      S.accounts = d.accounts || null; S.transfers = d.transfers || [];
-      if (d.cfg?.currency) { S.cfg.currency = d.cfg.currency; S.cfg.usdRate = d.cfg.usdRate || S.cfg.usdRate; }
-      ensureCash(); S.cfg.setupPending = false; persist(); setMoney(); render();
-      if (connected()) { queueAll(); persist(); sync(true); }
-      toast('Copia restaurada');
-    } catch (e) { toast('Ese archivo no es una copia de Mis Gastos'); }
+    let d;
+    try { d = JSON.parse(await inp.files[0].text()); } catch (e) { return toast('Ese archivo no es una copia de Mis Gastos'); }
+    if (d.app !== 'mis-gastos') return toast('Ese archivo no es una copia de Mis Gastos');
+    if (d.enc) {
+      const pass = await askPassword({ title: 'Abrir copia', hint: 'Escribí la contraseña con la que guardaste esta copia.' });
+      if (!pass) return;
+      try { d = await decryptJSON(d, pass); } catch (e) { return toast('Contraseña incorrecta'); }
+    }
+    if (!Array.isArray(d.expenses)) return toast('Ese archivo no es una copia de Mis Gastos');
+    if (!confirm(`¿Reemplazar los datos de este celular por la copia del ${new Date(d.date).toLocaleDateString('es-UY')}?`)) return;
+    S.expenses = d.expenses; S.budgets = d.budgets || {}; S.cards = d.cards || []; S.recurring = d.recurring || [];
+    S.accounts = d.accounts || null; S.transfers = d.transfers || [];
+    if (d.cfg?.currency) { S.cfg.currency = d.cfg.currency; S.cfg.usdRate = d.cfg.usdRate || S.cfg.usdRate; }
+    ensureCash(); S.cfg.setupPending = false; persist(); setMoney(); render();
+    if (connected()) { queueAll(); persist(); sync(true); }
+    toast('Copia restaurada');
   };
   inp.click();
 }
+function ago(iso) {
+  const days = Math.floor((Date.now() - new Date(iso)) / 864e5);
+  return days <= 0 ? 'Hoy' : days === 1 ? 'Ayer' : `Hace ${days} días`;
+}
+const backupDue = () => S.expenses.length > 0 && !S.cfg.setupPending && (!S.cfg.lastBackup || Date.now() - new Date(S.cfg.lastBackup) > 7 * 864e5)
+  && (!S.cfg.backupSnooze || Date.now() > new Date(S.cfg.backupSnooze));
 function queueAll() {
   S.queue = [
     ...S.cards.map((c) => ({ type: 'card', card: c })),
@@ -1267,15 +1294,13 @@ document.addEventListener('click', (ev) => {
     'sync-now': () => sync(true),
     'disconnect': () => {
       if (confirm('¿Desconectar la hoja? Tus datos quedan en Google Sheets y en este teléfono.')) {
-        S.cfg.url = ''; S.cfg.token = ''; S.cfg.sheetUrl = ''; S.queue = []; S.syncError = null; persist(); render();
+        S.cfg.url = ''; S.cfg.token = ''; S.queue = []; S.syncError = null; persist(); render();
       }
     },
     'export': exportCSV,
     'backup': backup,
+    'backup-later': () => { S.cfg.backupSnooze = new Date(Date.now() + 3 * 864e5).toISOString(); persist(); render(); },
     'restore': restore,
-    'create-sheet': createSheet,
-    'rotate-key': rotateKey,
-    'delete-sheet': deleteMySheet,
     'paste-code': () => {
       const code = prompt('Pegá el código que te mostró la hoja (Mis Gastos → Conectar celular):');
       if (!code) return;
@@ -1317,7 +1342,6 @@ document.addEventListener('change', (ev) => {
   if (['f-rec', 'f-end-mode', 'f-end', 'f-date'].includes(ev.target.id)) updateRec();
 });
 ['sheet', 'bsheet', 'csheet', 'asheet', 'tsheet', 'psheet'].forEach((id) => $(id).addEventListener('click', (ev) => { if (ev.target.id === id) ev.target.close(); }));
-document.addEventListener('keydown', (ev) => { if (ev.target.id === 'cfg-email' && ev.key === 'Enter') { ev.preventDefault(); createSheet(); } });
 $('f-amount').addEventListener('keydown', (ev) => { if (ev.key === 'Enter') saveExpense(); });
 
 window.addEventListener('online', () => sync());
@@ -1338,6 +1362,13 @@ if (!Array.isArray(S.accounts)) {
   persist();
 }
 ensureCash();
+
+if (S.cfg.url === OLD_CENTRAL_URL) {
+  S.cfg.url = ''; S.cfg.token = ''; S.queue = []; S.syncError = null; delete S.cfg.sheetUrl; delete S.cfg.email; persist();
+  setTimeout(() => toast('Ahora tus datos quedan solo en tu celular. Guardá copias cifradas desde Ajustes.'), 800);
+}
+// Pide al navegador que no borre los datos por falta de espacio.
+if (navigator.storage?.persist) navigator.storage.persisted().then((p) => p || navigator.storage.persist());
 
 setMoney();
 show('home');

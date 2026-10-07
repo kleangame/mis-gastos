@@ -2,8 +2,6 @@
  * Mis Gastos — backend en Google Sheets.
  * Modo simple: copiá la hoja plantilla, implementá como App web y usá el menú Mis Gastos → Conectar celular.
  * Modo avanzado: pegá este código en Extensiones > Apps Script, cambiá TOKEN y publicalo como App web.
- * Modo central: este mismo código en un proyecto independiente (sin hoja), publicado como App web
- * (ejecutar como yo, acceso: cualquier persona). La app pide un Gmail, crea una hoja nueva y la comparte.
  */
 const TOKEN = 'CAMBIA-ESTA-CLAVE';   // Opcional. Si lo dejás así, la clave se genera sola.
 const APP_URL = 'https://kleangame.github.io/mis-gastos/';
@@ -85,112 +83,14 @@ function doGet() {
   return json({ ok: true, app: 'Mis Gastos', mensaje: 'API funcionando. Usá POST desde la app.' });
 }
 
-// ---- modo central: una hoja por usuario, creada y compartida por este script ----
-let CURRENT_SS = null;
-function book() { return CURRENT_SS || SpreadsheetApp.getActiveSpreadsheet(); }
-function isCentral() { return !SpreadsheetApp.getActiveSpreadsheet(); }
-const MAX_REGISTROS_DIA = 30;      // hojas nuevas por día, en total
-const MAX_POR_MAIL_DIA = 2;        // hojas nuevas por día para un mismo correo
-const ADMIN_MAIL = 'misgastos.app.uy@gmail.com';
-
-// El correo nunca se guarda: solo un hash con sal secreta, y solo para el límite diario.
-function mailHash(email) {
-  const props = PropertiesService.getScriptProperties();
-  let salt = props.getProperty('SALT');
-  if (!salt) { salt = Utilities.getUuid() + Utilities.getUuid(); props.setProperty('SALT', salt); }
-  const raw = Utilities.computeHmacSha256Signature(email, salt);
-  return Utilities.base64EncodeWebSafe(raw).slice(0, 22);
-}
-// Borra contadores de días anteriores.
-function cleanCounters(props, day) {
-  props.getKeys().forEach((k) => { if ((k.startsWith('reg:') || k.startsWith('e:')) && !k.endsWith(day)) props.deleteProperty(k); });
-}
-// Comparte sin mandar aviso por mail si el servicio avanzado de Drive está activo.
-function shareWith(fileId, email) {
-  if (typeof Drive !== 'undefined') {
-    Drive.Permissions.create({ role: 'writer', type: 'user', emailAddress: email }, fileId, { sendNotificationEmail: false });
-  } else {
-    DriveApp.getFileById(fileId).addEditor(email);
-  }
-}
-function writeConnectTab(ss, token) {
-  const link = APP_URL + '#connect=' + encodeURIComponent(ScriptApp.getService().getUrl()) + '&k=' + encodeURIComponent(token);
-  let c = ss.getSheetByName('Conectar');
-  if (!c) c = ss.insertSheet('Conectar', 0);
-  c.clear();
-  c.getRange('A1:A6').setValues([['Mis Gastos — conexión'],
-    ['Abrí este link en el celular para conectar la app a esta hoja:'], [link],
-    ['No compartas este link ni esta hoja: dan acceso a tus datos. Si se filtró, usá «Cambiar clave» en Ajustes de la app.'],
-    ['Esta hoja la crea y administra la cuenta ' + ADMIN_MAIL + ', que técnicamente puede ver su contenido.'],
-    ['Podés borrarla cuando quieras desde la app: Ajustes → Eliminar mi hoja.']]);
-  c.getRange('A1').setFontWeight('bold').setFontSize(14);
-  c.setColumnWidth(1, 700);
-}
-
-function register(email) {
-  email = String(email || '').trim().toLowerCase();
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return { ok: false, error: 'Ese correo no es válido' };
-  const props = PropertiesService.getScriptProperties();
-  const day = Utilities.formatDate(new Date(), 'UTC', 'yyyy-MM-dd');
-  cleanCounters(props, day);
-  const n = Number(props.getProperty('reg:' + day) || 0);
-  if (n >= MAX_REGISTROS_DIA) return { ok: false, error: 'Hoy ya se crearon muchas hojas. Probá mañana.' };
-  const ek = 'e:' + mailHash(email) + ':' + day;
-  const m = Number(props.getProperty(ek) || 0);
-  if (m >= MAX_POR_MAIL_DIA) return { ok: false, error: 'Ya creaste hojas hoy con este correo. Probá mañana.' };
-  props.setProperty(ek, String(m + 1));
-  const ss = SpreadsheetApp.create('Mis Gastos');
-  CURRENT_SS = ss;
-  try {
-    ss.setSpreadsheetTimeZone(Session.getScriptTimeZone());
-    setupSheets();
-    ['Hoja 1', 'Sheet1', 'Hoja1'].forEach((nm) => { const sh = ss.getSheetByName(nm); if (sh && ss.getSheets().length > 1) ss.deleteSheet(sh); });
-    shareWith(ss.getId(), email);
-  } catch (err) {
-    DriveApp.getFileById(ss.getId()).setTrashed(true);
-    return { ok: false, error: /invalid|inválid|no es válid|not.*(google|found)|notif/i.test(String(err)) ? 'Ese correo no tiene cuenta de Google' : 'No pude crear la hoja. Probá de nuevo.' };
-  }
-  const token = newToken();
-  props.setProperty('u:' + token, ss.getId());
-  props.setProperty('reg:' + day, String(n + 1));
-  writeConnectTab(ss, token);
-  return { ok: true, token: token, sheetUrl: ss.getUrl() };
-}
-function newToken() { return Utilities.getUuid().replace(/-/g, '') + Utilities.getUuid().replace(/-/g, ''); }
-
-// Cambia la clave: la anterior deja de funcionar.
-function rotateToken(oldToken, id) {
-  const props = PropertiesService.getScriptProperties();
-  const token = newToken();
-  props.setProperty('u:' + token, id);
-  props.deleteProperty('u:' + oldToken);
-  writeConnectTab(CURRENT_SS, token);
-  return { ok: true, token: token };
-}
-// Elimina la hoja del usuario y su clave.
-function deleteSheet(token, id) {
-  if (typeof Drive !== 'undefined') Drive.Files.remove(id); else DriveApp.getFileById(id).setTrashed(true);
-  PropertiesService.getScriptProperties().deleteProperty('u:' + token);
-  return { ok: true };
-}
-
 function doPost(e) {
   let req;
   try { req = JSON.parse(e.postData.contents); } catch (err) { return json({ ok: false, error: 'JSON inválido' }); }
+  if (req.token !== getToken()) return json({ ok: false, error: 'Clave incorrecta' });
 
   const lock = LockService.getScriptLock();
   lock.waitLock(20000);
   try {
-    if (isCentral()) {
-      if (req.action === 'register') return json(register(req.email));
-      const id = req.token && PropertiesService.getScriptProperties().getProperty('u:' + req.token);
-      if (!id) return json({ ok: false, error: 'Clave incorrecta' });
-      CURRENT_SS = SpreadsheetApp.openById(id);
-      if (req.action === 'rotate') return json(rotateToken(req.token, id));
-      if (req.action === 'delete') return json(deleteSheet(req.token, id));
-    } else if (req.token !== getToken()) {
-      return json({ ok: false, error: 'Clave incorrecta' });
-    }
     if (req.action === 'sync') {
       (req.ops || []).forEach(applyOp);
       return json({ ok: true, version: 6, expenses: readExpenses(), budgets: readBudgets(), cards: readCards(), recurring: readRecurring(),
@@ -198,7 +98,7 @@ function doPost(e) {
     }
     return json({ ok: false, error: 'Acción desconocida' });
   } catch (err) {
-    return json({ ok: false, error: isCentral() ? 'Error del servidor. Probá de nuevo.' : String(err.message || err) });
+    return json({ ok: false, error: String(err.message || err) });
   } finally {
     lock.releaseLock();
   }
@@ -354,7 +254,7 @@ function readBudgets() {
 function txt(v) { return v instanceof Date ? v.toISOString() : String(v || '').replace(/^'/, ''); }
 function ym(v) { return v instanceof Date ? Utilities.formatDate(v, Session.getScriptTimeZone(), 'yyyy-MM') : String(v || '').replace(/^'/, ''); }
 function sheet(name, headers) {
-  const ss = book();
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
   let sh = ss.getSheetByName(name);
   if (!sh) {
     sh = ss.insertSheet(name);

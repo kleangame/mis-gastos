@@ -92,6 +92,22 @@
     </div>
   </dialog>
 
+  <!-- Contraseña de la copia -->
+  <dialog id="pwsheet" class="sheet small">
+    <div class="grabber"></div>
+    <header class="sheet-head">
+      <button type="button" class="link" id="pw-cancel">Cancelar</button>
+      <strong id="pw-title">Contraseña</strong>
+      <button type="button" class="link bold" id="pw-ok">Listo</button>
+    </header>
+    <p class="hint center" id="pw-hint"></p>
+    <div class="pw-fields">
+      <input id="pw-1" class="field" type="password" autocomplete="new-password" placeholder="Contraseña" enterkeyhint="done">
+      <div id="pw-2row"><input id="pw-2" class="field" type="password" autocomplete="new-password" placeholder="Repetila" enterkeyhint="done"></div>
+      <p class="field-error" id="pw-err"></p>
+    </div>
+  </dialog>
+
   <!-- Hoja para presupuesto -->
   <dialog id="bsheet" class="sheet small">
     <div class="grabber"></div>

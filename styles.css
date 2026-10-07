@@ -237,3 +237,5 @@ details.adv[open] summary::after { content: " ⌄"; }
 .field[aria-invalid="true"] { border-color: var(--red, #ff3b30); }
 .field-error { color: var(--red, #ff3b30); font-size: 13px; margin: -8px 0 12px 2px; }
 .card.steps .steps-note { color: var(--label2); font-size: 12px; line-height: 1.35; margin: 2px 0 10px; }
+.pw-fields { padding: 0 16px; }
+#pwsheet .hint { margin: 4px 24px 16px; }
