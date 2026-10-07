@@ -27,7 +27,7 @@ const CARD_COLORS = [
 const CURRENCIES = ['UYU', 'USD', 'ARS', 'EUR', 'BRL', 'CLP', 'MXN', 'COP', 'PEN'];
 const MONTHS = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
 const CASH = 'cash';           // id de la cuenta Efectivo (también usado por datos de versiones anteriores)
-const APP_VERSION = '6.2.0';
+const APP_VERSION = '6.2.1';
 // Hoja plantilla con el script ya incluido (modo simple). /copy abre «Hacer una copia» en Google Sheets.
 const CENTRAL_URL = 'https://script.google.com/macros/s/AKfycbyoU8AzSSD3oflbJBEqjcdl-SK0ByHak7hqwezsMzZZLverdfsSfxwIfxt84mWirxRD2Q/exec';
 const TEMPLATE_URL = 'https://docs.google.com/spreadsheets/d/1SzK5xBkthlZ3HhRSYwWOv12acXDUh5jHQaxg7LRNZi4/copy';
@@ -578,8 +578,10 @@ function renderSettings() {
          <div class="group"><button class="row danger center" data-action="disconnect">Desconectar hoja</button></div>`
       : `<div class="card steps">
           <b>Guardá tus datos en tu Google Sheet</b>
-          <p class="footer-note">Poné tu Gmail y te creamos una hoja compartida con vos. Se sincroniza sola.</p>
-          <div class="group"><label class="row"><span>Tu Gmail</span><input id="cfg-email" type="email" inputmode="email" autocomplete="email" placeholder="vos@gmail.com"></label></div>
+          <p class="steps-sub">Poné tu Gmail y te creamos una hoja compartida con vos. Se sincroniza sola.</p>
+          <label class="field-label" for="cfg-email">Tu Gmail</label>
+          <input id="cfg-email" class="field" type="email" inputmode="email" autocomplete="email" autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="go" placeholder="nombre@gmail.com" value="${esc(S.cfg.email || '')}" ${S.emailError ? 'aria-invalid="true"' : ''}>
+          ${S.emailError ? `<p class="field-error">${esc(S.emailError)}</p>` : ''}
           <button class="btn" data-action="create-sheet" ${S.creating ? 'disabled' : ''}>${S.creating ? 'Creando…' : 'Crear mi hoja'}</button>
           <button class="link" data-action="paste-code">¿Ya tenés una hoja? Pegá el código o abrí su link</button>
         </div>
@@ -723,8 +725,10 @@ async function sync(manual = false) {
 }
 // Modo central: el script de Mis Gastos crea una hoja nueva y la comparte con el Gmail del usuario.
 async function createSheet() {
-  const email = $('cfg-email').value.trim();
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return toast('Ingresá tu Gmail');
+  if (S.creating) return;
+  const email = $('cfg-email').value.trim().toLowerCase();
+  S.cfg.email = email; S.emailError = ''; persist();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { S.emailError = email ? 'Revisá el correo, parece incompleto' : 'Escribí tu Gmail'; render(); $('cfg-email').focus(); return; }
   if (!CENTRAL_URL) return toast('Todavía no está disponible. Usá la configuración avanzada.');
   S.creating = true; render();
   try {
@@ -736,7 +740,7 @@ async function createSheet() {
     await connectWith(CENTRAL_URL, d.token);
     if (connected()) toast('¡Listo! Tu hoja quedó creada y compartida con ' + email);
   } catch (e) {
-    toast(e.message === 'Failed to fetch' ? 'Sin conexión. Probá de nuevo.' : e.message);
+    S.emailError = e.message === 'Failed to fetch' ? 'Sin conexión. Probá de nuevo.' : e.message;
   } finally { S.creating = false; render(); }
 }
 async function connect() { return connectWith($('cfg-url').value.trim(), $('cfg-token').value.trim()); }
@@ -1288,6 +1292,7 @@ document.addEventListener('change', (ev) => {
   if (['f-rec', 'f-end-mode', 'f-end', 'f-date'].includes(ev.target.id)) updateRec();
 });
 ['sheet', 'bsheet', 'csheet', 'asheet', 'tsheet', 'psheet'].forEach((id) => $(id).addEventListener('click', (ev) => { if (ev.target.id === id) ev.target.close(); }));
+document.addEventListener('keydown', (ev) => { if (ev.target.id === 'cfg-email' && ev.key === 'Enter') { ev.preventDefault(); createSheet(); } });
 $('f-amount').addEventListener('keydown', (ev) => { if (ev.key === 'Enter') saveExpense(); });
 
 window.addEventListener('online', () => sync());
