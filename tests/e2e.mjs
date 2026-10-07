@@ -109,6 +109,10 @@ for (const [nm, cur] of [['Caja pesos', ''], ['Caja dólares', 'USD']]) {
   await page.fill('#a-balance', cur ? '500' : '20000'); await page.click('[data-action="save-account"]'); await page.waitForTimeout(150);
 }
 ok((await page.locator('#view-cards .section-h', { hasText: 'BROU' }).count()) === 1, 'agrupa las cajas del mismo banco');
+await page.evaluate(() => openExpense());
+ok(await page.locator('#f-from optgroup[label*="BROU"] option', { hasText: 'Caja pesos' }).count() === 1, 'al cargar un gasto, la cuenta aparece bajo su banco');
+ok((await page.locator('#f-from option', { hasText: 'Caja pesos' }).textContent()).includes('20.000'), 'la lista muestra el saldo de cada cuenta');
+await page.evaluate(() => $('sheet').close());
 const ids = await page.evaluate(() => ({ p: S.accounts.find((a) => a.name === 'Caja pesos').id, u: S.accounts.find((a) => a.name === 'Caja dólares').id }));
 await page.click('.quick [data-action="new-card"]');
 await page.fill('#c-name', 'Visa BROU'); await page.fill('#c-limit', '50000');
@@ -141,7 +145,7 @@ await page.evaluate(() => { const ids2 = S.accounts.filter((a) => a.bank === 'BR
 const cashBefore = await page.evaluate(() => accountBalance(account(CASH)));
 await page.evaluate(() => openExpense());
 await page.fill('#f-amount', '25000'); await page.click('#f-cats [data-cat="Casa"]');
-await page.evaluate(() => { const b = [...document.querySelectorAll('#f-from [data-action="pick-from"]')].find((x) => x.dataset.id === CASH); b.click(); });
+await page.selectOption('#f-from', 'cash');
 ok(await page.locator('#f-paid-row').isVisible(), 'ofrece marcar como ya descontado');
 await page.check('#f-paid'); await page.dispatchEvent('#f-paid', 'change');
 await page.click('[data-action="save-expense"]'); await page.waitForTimeout(150);
@@ -149,7 +153,7 @@ const pd = await page.evaluate(() => ({ bal: accountBalance(account(CASH)), inMo
 ok(pd.bal === cashBefore && pd.inMonth, 'queda en los gastos del mes sin tocar el saldo');
 await page.evaluate(() => { openExpense(); });
 await page.fill('#f-amount', '30000'); await page.check('#f-rec'); await page.dispatchEvent('#f-rec', 'change');
-await page.evaluate(() => { const b = [...document.querySelectorAll('#f-from [data-action="pick-from"]')].find((x) => x.dataset.id === CASH); b.click(); });
+await page.selectOption('#f-from', 'cash');
 await page.check('#f-paid'); await page.dispatchEvent('#f-paid', 'change');
 await page.click('[data-action="save-expense"]'); await page.waitForTimeout(150);
 const pr = await page.evaluate(() => ({ bal: accountBalance(account(CASH)), rule: S.recurring.find((r) => r.amount === 30000) }));

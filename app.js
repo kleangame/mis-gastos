@@ -28,7 +28,7 @@ const CARD_COLORS = [
 const CURRENCIES = ['UYU', 'USD', 'ARS', 'EUR', 'BRL', 'CLP', 'MXN', 'COP', 'PEN'];
 const MONTHS = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
 const CASH = 'cash';           // id de la cuenta Efectivo (también usado por datos de versiones anteriores)
-const APP_VERSION = '8.5.0';
+const APP_VERSION = '8.5.1';
 const ACC_TYPES = {
   cash:    { label: 'Efectivo',  emoji: '💵', color: '#34C759' },
   bank:    { label: 'Banco',     emoji: '🏦', color: '#007AFF' },
@@ -1249,9 +1249,22 @@ function updateCur() {
 function renderFrom() {
   const inc = S.selType === 'income';
   $('f-from-label').textContent = inc ? 'A' : 'Desde';
-  const opts = [...S.accounts.map((a) => ({ id: a.id, label: `${(ACC_TYPES[a.type] || ACC_TYPES.bank).emoji} ${a.name}` })),
-    ...(inc ? [] : S.cards.map((c) => ({ id: c.id, label: `💳 ${c.name}` })))];
-  $('f-from').innerHTML = opts.map((o) => `<button type="button" class="chip ${o.id === S.selMethod ? 'on' : ''}" data-action="pick-from" data-id="${esc(o.id)}">${esc(o.label)}</button>`).join('');
+  // Lista desplegable agrupada por banco, con el saldo de cada cuenta, para distinguir «Cuenta pesos» de Itaú y de Santander.
+  const accOpt = (a) => `<option value="${esc(a.id)}">${esc(a.bank ? accLabel(a) : `${(ACC_TYPES[a.type] || ACC_TYPES.bank).emoji} ${a.name}`)} · ${esc(fmtCur(accountBalance(a), accCur(a)))}</option>`;
+  const loose = S.accounts.filter((a) => !a.bank);
+  let html = loose.map(accOpt).join('');
+  for (const b of bankNames()) html += `<optgroup label="🏦 ${esc(b)}">${S.accounts.filter((a) => a.bank === b).map(accOpt).join('')}</optgroup>`;
+  if (!inc && S.cards.length) html += `<optgroup label="💳 Tarjetas de crédito">${S.cards.map((c) => `<option value="${esc(c.id)}">${esc(c.name)} · disponible ${esc(fmt(cardStats(c).available))}</option>`).join('')}</optgroup>`;
+  $('f-from').innerHTML = html;
+  $('f-from').value = S.selMethod;
+  const sa = account(S.selMethod), sc = card(S.selMethod);
+  $('f-from-bal').textContent = sa ? `Saldo ${fmtCur(accountBalance(sa), accCur(sa))}` : sc ? `Disponible ${fmt(cardStats(sc).available)}` : '';
+}
+function pickFrom(id) {
+  S.selMethod = id;
+  const a = account(id);
+  if (a && !S.editingId) S.selCur = accCur(a);
+  renderFrom(); updateCur(); updateRec();
 }
 function renderCatGrid() {
   const cats = catsFor(S.selType);
@@ -1897,12 +1910,7 @@ document.addEventListener('click', (ev) => {
     'set-cur': () => { S.selCur = el.dataset.cur; if (S.selCur === USD && !$('f-rate').value && S.cfg.usdRate) $('f-rate').value = String(S.cfg.usdRate).replace('.', ','); updateRec(); },
     'refresh-rate': () => fetchRate(true),
     'pick-cat': () => { S.selCat = el.dataset.cat; renderCatGrid(); },
-    'pick-from': () => {
-      S.selMethod = el.dataset.id;
-      const a = account(S.selMethod);
-      if (a && !S.editingId) S.selCur = accCur(a);
-      renderFrom(); updateRec();
-    },
+
     'new-account': () => openAccount(),
     'edit-account': () => openAccount(el.dataset.id),
     'close-asheet': () => $('asheet').close(),
@@ -2039,6 +2047,7 @@ document.addEventListener('change', (ev) => {
     const p = account(ev.target.value), sib = p && p.bank ? S.accounts.find((x) => accUSD(x) && x.bank === p.bank) : null;
     if (sib) $('c-pay-usd').value = sib.id;
   }
+  if (ev.target.id === 'f-from') pickFrom(ev.target.value);
   if (ev.target.id === 'f-paid') { S.paidTouched = true; updatePaid(); }
   if (['f-rec', 'f-end-mode', 'f-end', 'f-date'].includes(ev.target.id)) updateRec();
 });
