@@ -27,7 +27,7 @@ const CARD_COLORS = [
 const CURRENCIES = ['UYU', 'USD', 'ARS', 'EUR', 'BRL', 'CLP', 'MXN', 'COP', 'PEN'];
 const MONTHS = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
 const CASH = 'cash';           // id de la cuenta Efectivo (también usado por datos de versiones anteriores)
-const APP_VERSION = '8.0.0';
+const APP_VERSION = '8.0.1';
 const ACC_TYPES = {
   cash:    { label: 'Efectivo',  emoji: '💵', color: '#34C759' },
   bank:    { label: 'Banco',     emoji: '🏦', color: '#007AFF' },
@@ -1455,7 +1455,8 @@ function showLock() {
       if (!confirm('Sin el PIN no hay forma de abrir los datos de este celular, ni siquiera para nosotros. ¿Borrarlos y empezar de nuevo? Después podés restaurar una copia cifrada desde Ajustes.')) return;
       await idb.clear('kv'); await idb.clear('receipts'); location.reload();
     };
-    setTimeout(() => $('lock-pin').focus(), 100);
+    // Con huella activada, abre el lector solo al entrar; si se cancela, queda el PIN y el botón «Usar huella».
+    if (LOCK.bio) setTimeout(tryBio, 250); else setTimeout(() => $('lock-pin').focus(), 100);
   });
 }
 // Se vuelve a bloquear después de 1 minuto en segundo plano (salvo que hayas ido a elegir una foto o compartir).
