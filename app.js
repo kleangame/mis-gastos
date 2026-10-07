@@ -27,7 +27,7 @@ const CARD_COLORS = [
 const CURRENCIES = ['UYU', 'USD', 'ARS', 'EUR', 'BRL', 'CLP', 'MXN', 'COP', 'PEN'];
 const MONTHS = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
 const CASH = 'cash';           // id de la cuenta Efectivo (también usado por datos de versiones anteriores)
-const APP_VERSION = '6.2.1';
+const APP_VERSION = '6.3.0';
 // Hoja plantilla con el script ya incluido (modo simple). /copy abre «Hacer una copia» en Google Sheets.
 const CENTRAL_URL = 'https://script.google.com/macros/s/AKfycbyoU8AzSSD3oflbJBEqjcdl-SK0ByHak7hqwezsMzZZLverdfsSfxwIfxt84mWirxRD2Q/exec';
 const TEMPLATE_URL = 'https://docs.google.com/spreadsheets/d/1SzK5xBkthlZ3HhRSYwWOv12acXDUh5jHQaxg7LRNZi4/copy';
@@ -575,6 +575,11 @@ function renderSettings() {
     ${connected()
       ? `<button class="btn" data-action="sync-now" ${S.syncing ? 'disabled' : ''}>Sincronizar ahora</button>
          ${S.cfg.sheetUrl ? `<div class="group"><a class="row blue" href="${esc(S.cfg.sheetUrl)}" target="_blank" rel="noopener">Abrir mi hoja<span></span></a></div>` : ''}
+         ${isCentralConn() ? `<div class="group">
+           <button class="row blue" data-action="rotate-key">Cambiar clave<span></span></button>
+           <button class="row danger" data-action="delete-sheet">Eliminar mi hoja</button>
+         </div>
+         <p class="footer-note">Tu hoja la crea y administra la cuenta Mis Gastos, que técnicamente puede ver su contenido. Si cambiás la clave, los otros celulares conectados se desconectan.</p>` : ''}
          <div class="group"><button class="row danger center" data-action="disconnect">Desconectar hoja</button></div>`
       : `<div class="card steps">
           <b>Guardá tus datos en tu Google Sheet</b>
@@ -583,6 +588,7 @@ function renderSettings() {
           <input id="cfg-email" class="field" type="email" inputmode="email" autocomplete="email" autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="go" placeholder="nombre@gmail.com" value="${esc(S.cfg.email || '')}" ${S.emailError ? 'aria-invalid="true"' : ''}>
           ${S.emailError ? `<p class="field-error">${esc(S.emailError)}</p>` : ''}
           <button class="btn" data-action="create-sheet" ${S.creating ? 'disabled' : ''}>${S.creating ? 'Creando…' : 'Crear mi hoja'}</button>
+          <p class="steps-note">La hoja la crea y administra la cuenta Mis Gastos, que técnicamente puede ver su contenido. No guardamos tu correo: solo se usa para compartirte la hoja. Si querés que sea 100% tuya, usá la configuración avanzada desde una compu.</p>
           <button class="link" data-action="paste-code">¿Ya tenés una hoja? Pegá el código o abrí su link</button>
         </div>
         <details class="adv">
@@ -742,6 +748,23 @@ async function createSheet() {
   } catch (e) {
     S.emailError = e.message === 'Failed to fetch' ? 'Sin conexión. Probá de nuevo.' : e.message;
   } finally { S.creating = false; render(); }
+}
+const isCentralConn = () => connected() && S.cfg.url === CENTRAL_URL;
+async function rotateKey() {
+  if (!confirm('¿Cambiar la clave? Los otros celulares conectados a tu hoja se van a desconectar.')) return;
+  try {
+    const d = await api({ action: 'rotate' });
+    S.cfg.token = d.token; persist(); toast('Clave cambiada. El link nuevo está en la pestaña Conectar de tu hoja.');
+  } catch (e) { toast(e.message === 'Failed to fetch' ? 'Sin conexión. Probá de nuevo.' : e.message); }
+}
+async function deleteMySheet() {
+  if (!confirm('¿Eliminar tu hoja de Google Sheets? Se borran los datos guardados allí. Los de este celular quedan.')) return;
+  if (!confirm('Esto no se puede deshacer. ¿Eliminar igual?')) return;
+  try {
+    await api({ action: 'delete' });
+    S.cfg.url = ''; S.cfg.token = ''; S.cfg.sheetUrl = ''; S.queue = []; S.syncError = null; persist(); render();
+    toast('Tu hoja fue eliminada');
+  } catch (e) { toast(e.message === 'Failed to fetch' ? 'Sin conexión. Probá de nuevo.' : e.message); }
 }
 async function connect() { return connectWith($('cfg-url').value.trim(), $('cfg-token').value.trim()); }
 // Código de conexión que muestra la hoja: base64 (web-safe) de "url|clave".
@@ -1251,6 +1274,8 @@ document.addEventListener('click', (ev) => {
     'backup': backup,
     'restore': restore,
     'create-sheet': createSheet,
+    'rotate-key': rotateKey,
+    'delete-sheet': deleteMySheet,
     'paste-code': () => {
       const code = prompt('Pegá el código que te mostró la hoja (Mis Gastos → Conectar celular):');
       if (!code) return;
