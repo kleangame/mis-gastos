@@ -28,7 +28,7 @@ const CARD_COLORS = [
 const CURRENCIES = ['UYU', 'USD', 'ARS', 'EUR', 'BRL', 'CLP', 'MXN', 'COP', 'PEN'];
 const MONTHS = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
 const CASH = 'cash';           // id de la cuenta Efectivo (también usado por datos de versiones anteriores)
-const APP_VERSION = '8.5.1';
+const APP_VERSION = '8.6.0';
 const ACC_TYPES = {
   cash:    { label: 'Efectivo',  emoji: '💵', color: '#34C759' },
   bank:    { label: 'Banco',     emoji: '🏦', color: '#007AFF' },
@@ -395,7 +395,7 @@ const monthPicker = () => `<div class="month">
     <button data-action="next-month" aria-label="Mes siguiente">›</button>
   </div>`;
 const header = (title, action = 'new-expense') => `
-  <div class="nav">${action ? `<button class="icon-btn" data-action="${action}" aria-label="Agregar">+</button>` : ''}</div>
+  <div class="nav">${action === 'new-expense' ? `<button class="icon-btn" data-action="scan-ticket" aria-label="Escanear ticket">📷</button>` : ''}${action ? `<button class="icon-btn" data-action="${action}" aria-label="Agregar">+</button>` : ''}</div>
   <h1 class="large-title">${title}</h1>`;
 function entryRow(x) {
   const c = cat(x.category), inc = isIncome(x);
@@ -1101,7 +1101,7 @@ async function snapshot(withReceipts = true) {
   if (withReceipts) for (const id of S.receipts) { const b = await getReceipt(id).catch(() => null); if (b) receipts[id] = await blobToB64(b); }
   return { app: 'mis-gastos', version: APP_VERSION, date: new Date().toISOString(),
     expenses: S.expenses, budgets: S.budgets, cats: S.cats, cards: S.cards, recurring: S.recurring, accounts: S.accounts, transfers: S.transfers,
-    cfg: { currency: S.cfg.currency, usdRate: S.cfg.usdRate }, receipts };
+    cfg: { currency: S.cfg.currency, usdRate: S.cfg.usdRate, merchants: S.cfg.merchants || {} }, receipts };
 }
 // Devuelve true si la copia se guardó.
 async function backup() {
@@ -1146,7 +1146,7 @@ async function wipe() {
 async function applyBackup(d) {
   S.expenses = d.expenses; S.budgets = d.budgets || {}; S.cards = d.cards || []; S.recurring = d.recurring || [];
   S.accounts = d.accounts || null; S.transfers = d.transfers || []; S.cats = d.cats || [];
-  if (d.cfg?.currency) { S.cfg.currency = d.cfg.currency; S.cfg.usdRate = d.cfg.usdRate || S.cfg.usdRate; }
+  if (d.cfg?.currency) { S.cfg.currency = d.cfg.currency; S.cfg.usdRate = d.cfg.usdRate || S.cfg.usdRate; if (d.cfg.merchants) S.cfg.merchants = d.cfg.merchants; }
   if (d.receipts) {
     for (const id of [...S.receipts]) await delReceipt(id);
     for (const [id, data] of Object.entries(d.receipts)) await putReceipt(id, new Blob([unb64(data)], { type: 'image/jpeg' }));
@@ -1191,6 +1191,95 @@ function ago(iso) {
 const backupDue = () => S.expenses.length > 0 && !S.cfg.setupPending && (!S.cfg.lastBackup || Date.now() - new Date(S.cfg.lastBackup) > 7 * 864e5)
   && (!S.cfg.backupSnooze || Date.now() > new Date(S.cfg.backupSnooze));
 // ---------- Hoja de movimiento ----------
+// ---------- Escanear ticket (QR del CFE de DGI) ----------
+// El QR del e-ticket trae: RUT emisor, tipo de CFE, serie, número, monto total, fecha y código. Todo se lee en el celular.
+const CFE_TYPES = { 101: 'e-Ticket', 111: 'e-Factura', 102: 'Nota de crédito', 112: 'Nota de crédito', 103: 'Nota de débito', 113: 'Nota de débito', 131: 'e-Ticket', 141: 'e-Factura' };
+function parseCfe(text) {
+  const m = String(text || '').match(/consultaQR\/cfe\?([^#\s]+)/i);
+  if (!m) return null;
+  const f = decodeURIComponent(m[1]).split(',');
+  if (f.length < 6) return null;
+  const [rut, tipo, serie, nro, monto, fecha] = f.map((x) => x.trim());
+  const amount = Number(monto.replace(/[^\d.-]/g, ''));
+  const dm = fecha.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (!(amount > 0) || !dm) return null;
+  const t = Number(tipo);
+  return { rut, tipo: t, serie, nro, amount, date: `${dm[3]}-${dm[2].padStart(2, '0')}-${dm[1].padStart(2, '0')}`,
+    key: `${rut}-${serie}-${nro}`, type: [102, 112].includes(t) ? 'income' : 'expense', label: CFE_TYPES[t] || 'CFE' };
+}
+let jsqrLoad = null;
+const loadJsQR = () => jsqrLoad || (jsqrLoad = new Promise((res, rej) => {
+  if (window.jsQR) return res(window.jsQR);
+  const sc = document.createElement('script'); sc.src = 'jsqr.js';
+  sc.onload = () => res(window.jsQR); sc.onerror = () => { jsqrLoad = null; rej(new Error('jsqr')); };
+  document.head.appendChild(sc);
+}));
+async function readQR(file) {
+  const img = await createImageBitmap(file);
+  if ('BarcodeDetector' in window) {
+    try {
+      const codes = await new BarcodeDetector({ formats: ['qr_code'] }).detect(img);
+      const hit = codes.find((c) => parseCfe(c.rawValue)) || codes[0];
+      if (hit) return hit.rawValue;
+    } catch {}
+  }
+  const jsQR = await loadJsQR();
+  for (const max of [1600, 1100, 2400, 800]) {
+    const k = Math.min(1, max / Math.max(img.width, img.height));
+    const c = document.createElement('canvas'); c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);
+    const ctx = c.getContext('2d', { willReadFrequently: true }); ctx.drawImage(img, 0, 0, c.width, c.height);
+    const r = jsQR(ctx.getImageData(0, 0, c.width, c.height).data, c.width, c.height, { inversionAttempts: 'attemptBoth' });
+    if (r?.data) return r.data;
+  }
+  return null;
+}
+function scanTicket() {
+  const inp = document.createElement('input');
+  inp.type = 'file'; inp.accept = 'image/*'; inp.capture = 'environment'; S.extAt = Date.now();
+  inp.onchange = async () => {
+    const f = inp.files[0]; if (!f) return;
+    toast('Leyendo el ticket…');
+    let cfe = null, photo = null;
+    try { [cfe, photo] = await Promise.all([readQR(f).then(parseCfe).catch(() => null), shrinkImage(f).catch(() => null)]); }
+    catch {}
+    applyScan(cfe, photo);
+  };
+  inp.click();
+}
+function applyScan(cfe, photo) {
+  if (!$('sheet').open || S.editingId) openExpense();
+  if (photo) { S.pendingReceipt = photo; showReceiptPreview(photo); }
+  if (!cfe) { S.pendingCfe = null; return toast('No pude leer el QR (¿ticket arrugado?). Probá otra foto más de cerca o «Pegar link del QR». La foto queda adjunta.'); }
+  const dup = S.expenses.find((x) => x.cfe === cfe.key);
+  S.pendingCfe = cfe;
+  S.selType = cfe.type;
+  const m = (S.cfg.merchants || {})[cfe.rut];
+  if (m?.cat && catsFor(cfe.type).some((c) => c.name === m.cat)) S.selCat = m.cat;
+  if (m?.method && (account(m.method) || (card(m.method) && cfe.type === 'expense'))) S.selMethod = m.method;
+  S.selCur = '';
+  $('f-amount').value = String(cfe.amount).replace('.', ',');
+  $('f-date').value = cfe.date;
+  if (m?.name && !$('f-note').value) $('f-note').value = m.name;
+  $('f-note').placeholder = m?.name ? 'Opcional' : 'Nombre del comercio (lo recuerdo)';
+  applyType();
+  toast(dup ? '⚠️ Este ticket ya está cargado. Revisá antes de guardar.'
+    : `${cfe.label} leído: ${fmt(cfe.amount)}${m?.name ? ' en ' + m.name : ''}. Revisá y guardá.`);
+}
+// Plan B: escaneás el QR con la cámara del celular (o Google Lens), copiás el link y lo pegás acá.
+async function pasteCfe() {
+  let t = '';
+  try { t = await navigator.clipboard.readText(); } catch {}
+  if (!parseCfe(t)) t = prompt('Pegá el link del QR del ticket (efactura.dgi.gub.uy/consultaQR/…)') || '';
+  if (!t) return;
+  const cfe = parseCfe(t);
+  if (!cfe) return toast('Ese link no es de un ticket de DGI');
+  applyScan(cfe, $('sheet').open && S.pendingReceipt instanceof Blob ? S.pendingReceipt : null);
+}
+function rememberMerchant(cfe, note) {
+  if (!cfe) return;
+  const prev = (S.cfg.merchants ||= {})[cfe.rut] || {};
+  S.cfg.merchants[cfe.rut] = { name: note || prev.name || '', cat: S.selCat, method: S.selMethod };
+}
 function openExpense(id = null, fixed = false) {
   const rule = id ? S.recurring.find((x) => x.id === id) : null;
   const e = rule || (id ? S.expenses.find((x) => x.id === id) : null);
@@ -1217,6 +1306,8 @@ function openExpense(id = null, fixed = false) {
   $('f-inst').value = e ? String(nInst(e)) : '1';
   $('f-delete-group').hidden = !e;
   S.pendingReceipt = null; showReceiptPreview(null);
+  S.pendingCfe = null; $('f-note').placeholder = 'Opcional';
+  $('f-scan-group').hidden = !!e;
   if (e && !rule && S.receipts.has(e.id)) getReceipt(e.id).then((b) => { if (S.editingId === e.id && !S.pendingReceipt) showReceiptPreview(b); }).catch(() => {});
   applyType();
   $('sheet').showModal();
@@ -1354,7 +1445,9 @@ function saveExpense() {
   S.pendingReceipt = null;
   upsertExpense({ id, type: S.selType, amount: r2(amount), category: S.selCat, date,
     note: $('f-note').value.trim(), method, installments, ...cur, rate: usd ? r2(rate) : '',
-    noBalance: !$('f-paid-row').hidden && $('f-paid').checked });
+    noBalance: !$('f-paid-row').hidden && $('f-paid').checked,
+    ...(S.pendingCfe ? { cfe: S.pendingCfe.key } : S.editingId ? { cfe: S.expenses.find((x) => x.id === S.editingId)?.cfe || '' } : {}) });
+  rememberMerchant(S.pendingCfe, $('f-note').value.trim()); S.pendingCfe = null;
   $('sheet').close();
   const d = parseLocal(date);
   S.offset = Math.min(0, monthKey(d) - nowKey());
@@ -1903,6 +1996,8 @@ document.addEventListener('click', (ev) => {
     'prev-month': () => { S.offset--; render(); },
     'next-month': () => { if (S.offset < 12) { S.offset++; render(); } },
     'new-expense': () => openExpense(),
+    'scan-ticket': scanTicket,
+    'paste-cfe': pasteCfe,
     'new-fixed': () => openExpense(null, true),
     'edit-expense': () => openExpense(el.dataset.id),
     'close-sheet': () => $('sheet').close(),
