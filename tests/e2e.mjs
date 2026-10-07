@@ -126,6 +126,9 @@ await page.waitForFunction(() => LOCK && !document.querySelector('#pwsheet[open]
 await page.waitForTimeout(800);
 const raw = await idbRaw();
 ok(!raw.includes('Almuerzo') && !raw.includes('[blob]') && raw.includes('"enc"'), 'datos y fotos quedan cifrados en el celular');
+await page.reload(); await ready();
+ok(await page.locator('#lock:not([hidden])').count() === 0, 'dentro de los 10 minutos no vuelve a pedir el PIN');
+await page.evaluate(async () => { const s = await idb.get('kv', 'session'); await idb.set('kv', 'session', { ...s, until: Date.now() - 1 }); });
 await page.reload();
 await page.waitForSelector('#lock:not([hidden])');
 ok(await page.locator('#view-home h1').count() === 0, 'al abrir pide el PIN sin mostrar datos');
@@ -140,6 +143,7 @@ await page.waitForSelector('#f-receipt-prev:not([hidden])', { timeout: 3000 }).c
 ok(await page.locator('#f-receipt-prev').isVisible(), 'la foto cifrada se abre con el PIN');
 await page.click('[data-action="close-sheet"]');
 await addExpense('55', 'Con bloqueo');
+await page.evaluate(async () => { const s = await idb.get('kv', 'session'); await idb.set('kv', 'session', { ...s, until: Date.now() - 1 }); });
 await page.reload(); await page.fill('#lock-pin', '246810'); await page.click('#lock-go'); await ready();
 ok(await page.locator('#view-home >> text=Con bloqueo').count() > 0, 'lo cargado con bloqueo se guarda cifrado y se recupera');
 await page.click('[data-tab="settings"]');

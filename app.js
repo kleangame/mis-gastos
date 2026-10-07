@@ -27,7 +27,7 @@ const CARD_COLORS = [
 const CURRENCIES = ['UYU', 'USD', 'ARS', 'EUR', 'BRL', 'CLP', 'MXN', 'COP', 'PEN'];
 const MONTHS = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
 const CASH = 'cash';           // id de la cuenta Efectivo (también usado por datos de versiones anteriores)
-const APP_VERSION = '8.0.1';
+const APP_VERSION = '8.1.0';
 const ACC_TYPES = {
   cash:    { label: 'Efectivo',  emoji: '💵', color: '#34C759' },
   bank:    { label: 'Banco',     emoji: '🏦', color: '#007AFF' },
@@ -723,7 +723,7 @@ function renderSettings() {
         <button class="row danger" data-action="lock-off">Desactivar bloqueo</button>`
       : '<button class="row blue" data-action="lock-on">Activar bloqueo con PIN<span></span></button>'}
     </div>
-    <p class="footer-note">${LOCK ? 'Tus datos y fotos están cifrados en este celular. La app se bloquea al abrirla y después de un minuto en segundo plano.' : 'Pide un PIN al abrir la app y guarda tus datos cifrados en el celular, para que nadie los vea aunque tenga tu teléfono.'}</p>
+    <p class="footer-note">${LOCK ? 'Tus datos y fotos están cifrados en este celular. Te pide PIN o huella al abrir la app, salvo que la hayas usado en los últimos 10 minutos.' : 'Pide un PIN al abrir la app y guarda tus datos cifrados en el celular, para que nadie los vea aunque tenga tu teléfono.'}</p>
     <div class="section-h"><span>General</span></div>
     <div class="group">
       <label class="row"><span>Moneda</span>
@@ -1377,6 +1377,30 @@ function exportCSV() {
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
 
+// ---------- Sesión de 10 minutos ----------
+// Después de desbloquear, si cerrás y volvés a abrir dentro de 10 minutos no pide PIN ni huella.
+// La DEK se guarda envuelta con una clave del navegador no exportable, y la sesión vence sola.
+const GRACE_MS = 10 * 60 * 1000;
+async function startSession() {
+  try {
+    const k = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+    await idb.set('kv', 'session', { k, ...(await aesSeal(k, DEK_RAW)), until: Date.now() + GRACE_MS });
+  } catch (e) { console.warn('sin sesión', e); }
+}
+async function touchSession() {
+  if (!LOCK || !DEK) return;
+  const ses = await idb.get('kv', 'session').catch(() => null);
+  if (ses) await idb.set('kv', 'session', { ...ses, until: Date.now() + GRACE_MS });
+}
+async function resumeSession() {
+  const ses = await idb.get('kv', 'session').catch(() => null);
+  if (!ses) return false;
+  if (!(ses.until > Date.now())) { await idb.del('kv', 'session'); return false; }
+  try { DEK_RAW = await aesOpen(ses.k, ses); DEK = await importAes(DEK_RAW); return true; }
+  catch { await idb.del('kv', 'session'); return false; }
+}
+const endSession = () => idb.del('kv', 'session').catch(() => {});
+
 // ---------- Bloqueo con PIN y huella ----------
 let LOCK = null;   // { pin: {salt, iter, iv, data}, bio?: {credId, prfSalt, iv, data} } — la DEK envuelta, nunca el PIN
 async function checkPin(pin) {
@@ -1390,13 +1414,14 @@ async function enableLock() {
   LOCK = { v: 1, pin: await wrapWithPin(pin) };
   await idb.set('kv', 'lock', LOCK);
   await resealAll(null);
+  await startSession();
   render(); toast('Bloqueo activado: tus datos quedan cifrados');
 }
 async function disableLock() {
   if (!(await askPassword({ title: 'Desactivar bloqueo', hint: 'Ingresá tu PIN actual.', pin: true, check: checkPin }))) return;
   const prev = DEK; DEK = null; DEK_RAW = null;
   await resealAll(prev);
-  await idb.del('kv', 'lock'); LOCK = null;
+  await idb.del('kv', 'lock'); LOCK = null; await endSession();
   render(); toast('Bloqueo desactivado');
 }
 async function changePin() {
@@ -1437,7 +1462,7 @@ function showLock() {
       if (Date.now() < until) return ($('lock-err').textContent = `Esperá ${Math.ceil((until - Date.now()) / 1000)} segundos`);
       const pin = $('lock-pin').value; if (!pin) return;
       $('lock-err').textContent = 'Verificando…'; $('lock-go').disabled = true;
-      try { await unlockWithPin(LOCK, pin); finish(); }
+      try { await unlockWithPin(LOCK, pin); await startSession(); finish(); }
       catch {
         fails++; $('lock-pin').value = '';
         $('lock-err').textContent = 'PIN incorrecto';
@@ -1445,7 +1470,7 @@ function showLock() {
       } finally { $('lock-go').disabled = false; }
     };
     const tryBio = async () => {
-      try { await unlockWithBio(LOCK); finish(); }
+      try { await unlockWithBio(LOCK); await startSession(); finish(); }
       catch (e) { $('lock-err').textContent = e.name === 'NotAllowedError' ? '' : 'No se pudo usar la huella. Usá el PIN.'; }
     };
     $('lock-go').onclick = tryPin;
@@ -1459,12 +1484,14 @@ function showLock() {
     if (LOCK.bio) setTimeout(tryBio, 250); else setTimeout(() => $('lock-pin').focus(), 100);
   });
 }
-// Se vuelve a bloquear después de 1 minuto en segundo plano (salvo que hayas ido a elegir una foto o compartir).
+// Se vuelve a bloquear después de 10 minutos sin usar la app (en segundo plano o cerrada).
 let hiddenAt = 0;
 document.addEventListener('visibilitychange', () => {
-  if (document.hidden) { hiddenAt = Date.now(); return; }
-  if (LOCK && hiddenAt && Date.now() - hiddenAt > 60000 && !(S.extAt && hiddenAt - S.extAt < 3000)) location.reload();
+  if (document.hidden) { hiddenAt = Date.now(); touchSession(); return; }
+  if (LOCK && hiddenAt && Date.now() - hiddenAt > GRACE_MS) location.reload();
+  else touchSession();
 });
+window.addEventListener('pagehide', () => touchSession());
 
 // ---------- Importar estado de cuenta (CSV) ----------
 function parseCSV(text) {
@@ -1778,7 +1805,8 @@ async function boot() {
     document.body.insertAdjacentHTML('afterbegin', '<p class="footer-note center" style="padding:40px 20px">Este navegador no permite guardar datos. Abrí Mis Gastos en Chrome, sin modo incógnito.</p>');
     return;
   }
-  if (LOCK) await showLock();
+  if (LOCK && !(await resumeSession())) await showLock();
+  else if (LOCK) touchSession();
   const d = (await unseal(rec)) || {};
   DATA_KEYS.forEach((k) => { if (d[k] !== undefined) S[k] = d[k]; });
   S.cfg = { usdRate: 0, rateDate: '', currency: 'UYU', ...(d.cfg || {}) };

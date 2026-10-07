@@ -21,7 +21,7 @@ App web instalable (PWA) para registrar gastos, ingresos, cuentas, tarjetas y pr
 
 - Los datos se guardan en IndexedDB (migran solos desde localStorage en la v8).
 - **Bloqueo con PIN** (6 a 12 números): los datos y las fotos se cifran con una clave aleatoria AES-256,
-  que se guarda envuelta con el PIN (PBKDF2-SHA256, 600.000 iteraciones). Se vuelve a bloquear tras 1 minuto en segundo plano.
+  que se guarda envuelta con el PIN (PBKDF2-SHA256, 600.000 iteraciones). Después de desbloquear, no vuelve a pedir PIN ni huella durante 10 minutos (aunque cierres la app); pasado ese tiempo sin usarla, se bloquea.
 - **Huella** opcional (WebAuthn con la extensión PRF), si el celular y el navegador la permiten.
 - Sin el PIN no hay forma de abrir los datos: solo se recuperan con una copia cifrada.
 
