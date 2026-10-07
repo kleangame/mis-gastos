@@ -27,8 +27,9 @@ const CARD_COLORS = [
 const CURRENCIES = ['UYU', 'USD', 'ARS', 'EUR', 'BRL', 'CLP', 'MXN', 'COP', 'PEN'];
 const MONTHS = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
 const CASH = 'cash';           // id de la cuenta Efectivo (también usado por datos de versiones anteriores)
-const APP_VERSION = '6.1.1';
+const APP_VERSION = '6.2.0';
 // Hoja plantilla con el script ya incluido (modo simple). /copy abre «Hacer una copia» en Google Sheets.
+const CENTRAL_URL = 'https://script.google.com/macros/s/AKfycbyoU8AzSSD3oflbJBEqjcdl-SK0ByHak7hqwezsMzZZLverdfsSfxwIfxt84mWirxRD2Q/exec';
 const TEMPLATE_URL = 'https://docs.google.com/spreadsheets/d/1SzK5xBkthlZ3HhRSYwWOv12acXDUh5jHQaxg7LRNZi4/copy';
 const ACC_TYPES = {
   cash:    { label: 'Efectivo',  emoji: '💵', color: '#34C759' },
@@ -573,25 +574,23 @@ function renderSettings() {
     </div>
     ${connected()
       ? `<button class="btn" data-action="sync-now" ${S.syncing ? 'disabled' : ''}>Sincronizar ahora</button>
+         ${S.cfg.sheetUrl ? `<div class="group"><a class="row blue" href="${esc(S.cfg.sheetUrl)}" target="_blank" rel="noopener">Abrir mi hoja<span></span></a></div>` : ''}
          <div class="group"><button class="row danger center" data-action="disconnect">Desconectar hoja</button></div>`
       : `<div class="card steps">
           <b>Guardá tus datos en tu Google Sheet</b>
-          <ol>
-            <li>Tocá <b>Crear mi hoja</b> y después «Hacer una copia».</li>
-            <li>En la copia: Extensiones → Apps Script → <b>Implementar</b> → Nueva implementación → Implementar, y aceptá los permisos.</li>
-            <li>En la hoja, menú <b>Mis Gastos → Conectar celular</b>, y escaneá el QR.</li>
-          </ol>
-          <button class="btn" data-action="create-sheet">Crear mi hoja</button>
-          <button class="link" data-action="paste-code">¿Te dio un código? Pegalo acá</button>
+          <p class="footer-note">Poné tu Gmail y te creamos una hoja compartida con vos. Se sincroniza sola.</p>
+          <div class="group"><label class="row"><span>Tu Gmail</span><input id="cfg-email" type="email" inputmode="email" autocomplete="email" placeholder="vos@gmail.com"></label></div>
+          <button class="btn" data-action="create-sheet" ${S.creating ? 'disabled' : ''}>${S.creating ? 'Creando…' : 'Crear mi hoja'}</button>
+          <button class="link" data-action="paste-code">¿Ya tenés una hoja? Pegá el código o abrí su link</button>
         </div>
         <details class="adv">
           <summary>Configuración avanzada</summary>
+          <p class="footer-note">Para usar tu propia hoja (se configura desde una compu): <a href="${TEMPLATE_URL}" target="_blank" rel="noopener">copiá la plantilla</a>, implementá el script y usá el menú Mis Gastos → Conectar celular. O pegá la URL y la clave acá.</p>
           <div class="group">
             <label class="row"><span>URL del script</span><input id="cfg-url" type="url" placeholder="https://script.google.com/…" value="${esc(S.cfg.url)}"></label>
             <label class="row"><span>Clave</span><input id="cfg-token" type="password" placeholder="Tu clave secreta" value="${esc(S.cfg.token)}"></label>
           </div>
           <button class="btn" data-action="connect">Conectar hoja</button>
-          <p class="footer-note">Para quien ya tiene el script pegado en su propia hoja. Las instrucciones están en el README.</p>
         </details>`}
     <div class="section-h"><span>General</span></div>
     <div class="group">
@@ -721,6 +720,24 @@ async function sync(manual = false) {
     S.syncing = false; render();
   }
   if (S.queue.length && !S.syncError) sync();
+}
+// Modo central: el script de Mis Gastos crea una hoja nueva y la comparte con el Gmail del usuario.
+async function createSheet() {
+  const email = $('cfg-email').value.trim();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return toast('Ingresá tu Gmail');
+  if (!CENTRAL_URL) return toast('Todavía no está disponible. Usá la configuración avanzada.');
+  S.creating = true; render();
+  try {
+    const res = await fetch(CENTRAL_URL, { method: 'POST', body: JSON.stringify({ action: 'register', email }) });
+    const d = await res.json();
+    if (!d.ok) throw new Error(d.error || 'No se pudo crear la hoja');
+    S.cfg.sheetUrl = d.sheetUrl;
+    S.creating = false;
+    await connectWith(CENTRAL_URL, d.token);
+    if (connected()) toast('¡Listo! Tu hoja quedó creada y compartida con ' + email);
+  } catch (e) {
+    toast(e.message === 'Failed to fetch' ? 'Sin conexión. Probá de nuevo.' : e.message);
+  } finally { S.creating = false; render(); }
 }
 async function connect() { return connectWith($('cfg-url').value.trim(), $('cfg-token').value.trim()); }
 // Código de conexión que muestra la hoja: base64 (web-safe) de "url|clave".
@@ -1223,16 +1240,13 @@ document.addEventListener('click', (ev) => {
     'sync-now': () => sync(true),
     'disconnect': () => {
       if (confirm('¿Desconectar la hoja? Tus datos quedan en Google Sheets y en este teléfono.')) {
-        S.cfg.url = ''; S.cfg.token = ''; S.queue = []; S.syncError = null; persist(); render();
+        S.cfg.url = ''; S.cfg.token = ''; S.cfg.sheetUrl = ''; S.queue = []; S.syncError = null; persist(); render();
       }
     },
     'export': exportCSV,
     'backup': backup,
     'restore': restore,
-    'create-sheet': () => {
-      if (!TEMPLATE_URL) return toast('La plantilla todavía no está disponible. Usá la configuración avanzada.');
-      window.open(TEMPLATE_URL, '_blank');
-    },
+    'create-sheet': createSheet,
     'paste-code': () => {
       const code = prompt('Pegá el código que te mostró la hoja (Mis Gastos → Conectar celular):');
       if (!code) return;
