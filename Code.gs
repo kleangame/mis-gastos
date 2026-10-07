@@ -2,6 +2,8 @@
  * Mis Gastos — backend en Google Sheets.
  * Modo simple: copiá la hoja plantilla, implementá como App web y usá el menú Mis Gastos → Conectar celular.
  * Modo avanzado: pegá este código en Extensiones > Apps Script, cambiá TOKEN y publicalo como App web.
+ * Modo central: este mismo código en un proyecto independiente (sin hoja), publicado como App web
+ * (ejecutar como yo, acceso: cualquier persona). La app pide un Gmail, crea una hoja nueva y la comparte.
  */
 const TOKEN = 'CAMBIA-ESTA-CLAVE';   // Opcional. Si lo dejás así, la clave se genera sola.
 const APP_URL = 'https://kleangame.github.io/mis-gastos/';
@@ -83,14 +85,57 @@ function doGet() {
   return json({ ok: true, app: 'Mis Gastos', mensaje: 'API funcionando. Usá POST desde la app.' });
 }
 
+// ---- modo central: una hoja por usuario, creada y compartida por este script ----
+let CURRENT_SS = null;
+function book() { return CURRENT_SS || SpreadsheetApp.getActiveSpreadsheet(); }
+function isCentral() { return !SpreadsheetApp.getActiveSpreadsheet(); }
+const MAX_REGISTROS_DIA = 30;
+
+function register(email) {
+  email = String(email || '').trim().toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return { ok: false, error: 'Ese correo no es válido' };
+  const props = PropertiesService.getScriptProperties();
+  const day = Utilities.formatDate(new Date(), 'UTC', 'yyyy-MM-dd');
+  const n = Number(props.getProperty('reg:' + day) || 0);
+  if (n >= MAX_REGISTROS_DIA) return { ok: false, error: 'Hoy ya se crearon muchas hojas. Probá mañana.' };
+  const ss = SpreadsheetApp.create('Mis Gastos');
+  CURRENT_SS = ss;
+  try {
+    ss.setSpreadsheetTimeZone(Session.getScriptTimeZone());
+    setupSheets();
+    ['Hoja 1', 'Sheet1', 'Hoja1'].forEach((nm) => { const sh = ss.getSheetByName(nm); if (sh && ss.getSheets().length > 1) ss.deleteSheet(sh); });
+    ss.addEditor(email);
+  } catch (err) {
+    DriveApp.getFileById(ss.getId()).setTrashed(true);
+    return { ok: false, error: /invalid|inválid|no es válid/i.test(String(err)) ? 'Ese correo no tiene cuenta de Google' : 'No pude crear la hoja: ' + (err.message || err) };
+  }
+  const token = Utilities.getUuid().replace(/-/g, '') + Utilities.getUuid().replace(/-/g, '');
+  props.setProperty('u:' + token, ss.getId());
+  props.setProperty('reg:' + day, String(n + 1));
+  // Pestaña con el link para reconectar desde otro celular.
+  const link = APP_URL + '#connect=' + encodeURIComponent(ScriptApp.getService().getUrl()) + '&k=' + encodeURIComponent(token);
+  const c = ss.insertSheet('Conectar', 0);
+  c.getRange('A1:A4').setValues([['Mis Gastos — conexión'], ['Abrí este link en el celular para conectar la app a esta hoja:'], [link], ['No compartas este link: da acceso a tus datos.']]);
+  c.getRange('A1').setFontWeight('bold').setFontSize(14);
+  c.setColumnWidth(1, 700);
+  return { ok: true, token: token, sheetUrl: ss.getUrl() };
+}
+
 function doPost(e) {
   let req;
   try { req = JSON.parse(e.postData.contents); } catch (err) { return json({ ok: false, error: 'JSON inválido' }); }
-  if (req.token !== getToken()) return json({ ok: false, error: 'Clave incorrecta' });
 
   const lock = LockService.getScriptLock();
   lock.waitLock(20000);
   try {
+    if (isCentral()) {
+      if (req.action === 'register') return json(register(req.email));
+      const id = req.token && PropertiesService.getScriptProperties().getProperty('u:' + req.token);
+      if (!id) return json({ ok: false, error: 'Clave incorrecta' });
+      CURRENT_SS = SpreadsheetApp.openById(id);
+    } else if (req.token !== getToken()) {
+      return json({ ok: false, error: 'Clave incorrecta' });
+    }
     if (req.action === 'sync') {
       (req.ops || []).forEach(applyOp);
       return json({ ok: true, version: 6, expenses: readExpenses(), budgets: readBudgets(), cards: readCards(), recurring: readRecurring(),
@@ -254,7 +299,7 @@ function readBudgets() {
 function txt(v) { return v instanceof Date ? v.toISOString() : String(v || '').replace(/^'/, ''); }
 function ym(v) { return v instanceof Date ? Utilities.formatDate(v, Session.getScriptTimeZone(), 'yyyy-MM') : String(v || '').replace(/^'/, ''); }
 function sheet(name, headers) {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const ss = book();
   let sh = ss.getSheetByName(name);
   if (!sh) {
     sh = ss.insertSheet(name);
