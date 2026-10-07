@@ -195,3 +195,24 @@ input[type=month] { text-align: right; }
 
 .cur-seg { width: 160px; margin: -10px auto 10px; }
 #f-rate { text-align: right; }
+
+/* v6: cuentas */
+.amt small { display: block; font-size: 12px; color: var(--label2); font-weight: 400; text-align: right; }
+.amt.muted { color: var(--label2); }
+.quick { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 22px; }
+.quick button { background: var(--card); border-radius: 12px; padding: 12px 6px; font-size: 14px; font-weight: 500; color: var(--blue); display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.quick button span { font-size: 20px; line-height: 1; }
+.quick button:active { background: var(--fill); }
+.card.setup { border: 1.5px solid var(--blue); }
+.card.setup b { font-size: 17px; }
+.card.setup p { color: var(--label2); font-size: 14px; margin: 6px 0 12px; line-height: 1.35; }
+.card.setup .actions { display: flex; align-items: center; gap: 16px; }
+.btn.small { width: auto; height: 38px; padding: 0 18px; margin: 0; display: inline-block; }
+.btn.pay { height: 42px; margin: -4px 0 18px; background: var(--card); color: var(--blue); }
+.from-row { min-height: 36px; padding-bottom: 2px; }
+.from-chips { margin: 0; padding: 4px 16px 12px; }
+.from-chips .chip { background: var(--fill); }
+.from-chips .chip.on { background: var(--blue); color: #fff; }
+.sheet-moves .section-h, .sheet-moves .group { margin-left: 16px; margin-right: 16px; }
+.footer-note.center { text-align: center; }
+.ccard .avail.two { font-size: 20px; }

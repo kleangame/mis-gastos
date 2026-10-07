@@ -13,7 +13,12 @@ cada gasto se guarda como una fila en tu propia Google Sheet.
   para siempre o hasta un último mes (por ejemplo, alquiler de abril 2026 a abril 2027). Se ven y editan en Presupuestos.
 - Movimientos: agrupados por día, búsqueda y filtros (ingresos, tarjeta, categoría). Tocá uno para editarlo o eliminarlo.
 - Presupuestos: límite mensual por categoría con barra de progreso (verde, naranja, rojo).
-- Ajustes: conexión a Google Sheets, moneda, exportar CSV.
+- Cuentas (v6): banco, efectivo, ahorro e inversión, en pesos o dólares, con saldo que se mueve con cada gasto, ingreso o transferencia.
+  Patrimonio neto (lo que tenés menos lo que debés), metas de ahorro con aporte mensual sugerido, ajuste de saldo y valor de inversiones.
+- Transferencias entre cuentas (incluye compra de dólares con cotización), que no cuentan como gasto ni ingreso.
+- Pago de resumen de tarjeta: total, mínimo u otro monto, desde una cuenta. Deuda separada en pesos y en dólares.
+- Gastos e ingresos en dólares con la cotización del día (automática o manual).
+- Ajustes: conexión a Google Sheets, moneda, cotización del dólar, exportar CSV y número de versión.
 - Offline: los cambios quedan en cola y se suben solos al volver la conexión.
 
 ## 1. Crear la hoja y el backend (5 minutos)
@@ -48,3 +53,5 @@ La URL + clave dan acceso a esa hoja. No compartas ninguna de las dos. La hoja s
 ## Actualizar desde la versión anterior
 Reemplazá el código del script por el nuevo `Code.gs` y publicá una **nueva versión** de la misma implementación.
 La hoja "Gastos" suma las columnas tipo, medio, cuotas y tarjeta sin perder datos.
+Desde la v6 se crean solas las hojas "Cuentas" y "Transferencias", y "Tarjetas" suma pagar_desde y desde.
+Al abrir la v6, lo que cargaste como "Efectivo / débito" pasa a la cuenta Efectivo, y las cuotas de meses anteriores se toman como pagadas.

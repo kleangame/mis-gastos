@@ -26,7 +26,14 @@ const CARD_COLORS = [
 ];
 const CURRENCIES = ['UYU', 'USD', 'ARS', 'EUR', 'BRL', 'CLP', 'MXN', 'COP', 'PEN'];
 const MONTHS = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
-const CASH = 'cash';
+const CASH = 'cash';           // id de la cuenta Efectivo (también usado por datos de versiones anteriores)
+const APP_VERSION = '6.0.0';
+const ACC_TYPES = {
+  cash:    { label: 'Efectivo',  emoji: '💵', color: '#34C759' },
+  bank:    { label: 'Banco',     emoji: '🏦', color: '#007AFF' },
+  savings: { label: 'Ahorro',    emoji: '🐷', color: '#FF9500' },
+  invest:  { label: 'Inversión', emoji: '📈', color: '#5856D6' },
+};
 
 // ---------- Estado y almacenamiento ----------
 const store = {
@@ -38,6 +45,8 @@ const S = {
   budgets:  store.get('mg.budgets', {}),
   cards:    store.get('mg.cards', []),
   recurring: store.get('mg.recurring', []), // gastos/ingresos fijos mensuales
+  accounts: store.get('mg.accounts', null),  // cuentas: banco, efectivo, ahorro, inversión
+  transfers: store.get('mg.transfers', []),  // transferencias, pagos de tarjeta y ajustes de saldo
   queue:    store.get('mg.queue', []),
   cfg:      { usdRate: 0, rateDate: '', ...store.get('mg.cfg', { url: '', token: '', currency: 'UYU' }) },
   lastSync: store.get('mg.lastSync', null),
@@ -47,6 +56,7 @@ const S = {
 };
 function persist() {
   store.set('mg.expenses', S.expenses); store.set('mg.budgets', S.budgets); store.set('mg.cards', S.cards); store.set('mg.recurring', S.recurring);
+  store.set('mg.accounts', S.accounts); store.set('mg.transfers', S.transfers);
   store.set('mg.queue', S.queue); store.set('mg.cfg', S.cfg); store.set('mg.lastSync', S.lastSync);
 }
 const connected = () => !!(S.cfg.url && S.cfg.token);
@@ -57,6 +67,9 @@ const esc = (s = '') => String(s).replace(/[&<>"']/g, (c) => ({ '&':'&amp;','<':
 const ALL_CATS = [...CATS, ...INCOME_CATS];
 const cat = (name) => ALL_CATS.find((c) => c.name === name) || CATS[CATS.length - 1];
 const card = (id) => S.cards.find((c) => c.id === id);
+const account = (id) => (S.accounts || []).find((a) => a.id === id);
+const isCardM = (m) => !!card(m);
+const accIcon = (a) => { const t = ACC_TYPES[a.type] || ACC_TYPES.bank; return `<span class="ci" style="background:${t.color}">${t.emoji}</span>`; };
 const cardColor = (c) => CARD_COLORS[Math.max(0, S.cards.indexOf(c)) % CARD_COLORS.length];
 const uid = () => (crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2));
 const r2 = (n) => Math.round(n * 100) / 100;
@@ -90,6 +103,14 @@ async function fetchRate(manual = false) {
     if (manual) toast(`Dólar actualizado: ${rateLabel(S.cfg.usdRate)}`);
   } catch (err) { if (manual) toast('No se pudo obtener la cotización'); }
 }
+const accUSD = (a) => !!a && a.currency === USD && usdMode();
+const accCur = (a) => (accUSD(a) ? USD : '');
+const entryCur = (e) => (isUSD(e) ? USD : '');
+const fmtCur = (n, cur) => (cur === USD ? fmtUSD(n) : fmt(n));
+const toBase = (n, cur, rate) => (cur === USD ? n * (Number(rate) || Number(S.cfg.usdRate) || 0) : n);
+// Convierte entre la moneda principal ('') y USD.
+const conv = (amt, from, to, rate) => (from === to || !(rate > 0) ? amt : from === USD ? amt * rate : amt / rate);
+const dateOnly = (iso) => String(iso || '').slice(0, 10);
 const rateStale = () => !S.cfg.usdRate || (!S.cfg.rateManual && Date.now() - new Date(S.cfg.rateDate || 0).getTime() > 6 * 3600e3);
 const compact = (n) => new Intl.NumberFormat('es-UY', { style: 'currency', currency: S.cfg.currency, notation: 'compact', maximumFractionDigits: 1 }).format(n);
 const parseAmount = (s) => {
@@ -104,7 +125,7 @@ const monthKey = (d) => d.getFullYear() * 12 + d.getMonth();
 const nowKey = () => monthKey(new Date());
 const keyLabel = (k, short = false) => { const m = MONTHS[k % 12]; return short ? m.slice(0, 3) : `${m[0].toUpperCase()}${m.slice(1)} ${Math.floor(k / 12)}`; };
 const isIncome = (e) => e.type === 'income';
-const nInst = (e) => (!isIncome(e) && e.method && e.method !== CASH ? Math.max(1, Number(e.installments) || 1) : 1);
+const nInst = (e) => (!isIncome(e) && isCardM(e.method) ? Math.max(1, Number(e.installments) || 1) : 1);
 
 // ---------- Fijos ----------
 // Regla: { id, type, amount, category, note, method, day, start: 'YYYY-MM', end: 'YYYY-MM' | '' (para siempre) }
@@ -126,6 +147,10 @@ function firstInstallmentKey(e) {
   const shift = c && Number(c.closingDay) && d.getDate() > Number(c.closingDay) ? 1 : 0;
   return monthKey(d) + shift;
 }
+function instCur(e, k) {   // cuota en la moneda original del movimiento
+  const n = nInst(e), total = Number(e.amount), base = r2(total / n);
+  return k === n - 1 ? r2(total - base * (n - 1)) : base;
+}
 function installmentAmount(e, k) {
   const n = nInst(e), total = baseAmount(e), base = r2(total / n);
   return k === n - 1 ? r2(total - base * (n - 1)) : base;
@@ -135,7 +160,7 @@ function entriesForMonth(key) {
   const out = [];
   for (const e of S.expenses) {
     const n = nInst(e);
-    if (n === 1 && !(e.method && e.method !== CASH && !isIncome(e))) {
+    if (n === 1 && !(isCardM(e.method) && !isIncome(e))) {
       if (monthKey(parseLocal(e.date)) === key) out.push({ ...e, src: e, k: 0, n: 1, value: baseAmount(e) });
       continue;
     }
@@ -162,37 +187,74 @@ const byCategory = (items) => {
   const m = {}; items.forEach((e) => (m[e.category] = (m[e.category] || 0) + e.value));
   return Object.entries(m).sort((a, b) => b[1] - a[1]);
 };
-// Deuda pendiente de una tarjeta: cuotas del mes actual en adelante.
+// ---------- Cuentas ----------
+// Saldo = saldo inicial + ingresos − gastos + transferencias, contando solo lo posterior a la creación de la cuenta
+// (lo anterior ya está reflejado en el saldo inicial) y hasta hoy.
+function accountBalance(a) {
+  const cur = accCur(a), today = isoDate(new Date()), sd = dateOnly(a.since);
+  let b = Number(a.initial) || 0;
+  for (const e of S.expenses) {
+    if (e.method !== a.id || e.date > today || !(e.date > sd || String(e.updated || '') > String(a.since || ''))) continue;
+    const v = conv(Number(e.amount), entryCur(e), cur, rateOf(e));
+    b += isIncome(e) ? v : -v;
+  }
+  for (const r of S.recurring) {
+    if (r.method !== a.id) continue;
+    for (let k = ymKey(r.start); k <= nowKey(); k++) {
+      if (!ruleActive(r, k)) continue;
+      const d = ruleDate(r, k);
+      if (d > today || d <= sd || d < dateOnly(r.created)) continue;
+      const v = conv(Number(r.amount), entryCur(r), cur, Number(S.cfg.usdRate) || 1);
+      b += isIncome(r) ? v : -v;
+    }
+  }
+  for (const t of S.transfers) {
+    if (t.date > today) continue;
+    if (t.from === a.id) b -= Number(t.amount) || 0;
+    if (t.to === a.id) b += Number(t.toAmount) || 0;
+  }
+  return r2(b);
+}
+const accountBase = (a) => toBase(accountBalance(a), accCur(a));
+
+// Tarjeta: deuda en pesos y en dólares por separado. Cuenta las cuotas desde que la tarjeta se registró
+// (las anteriores se asumen pagadas) hasta este mes, menos los pagos de resumen.
 function cardStats(c) {
-  const now = nowKey();
-  let outstanding = 0, thisMonth = 0;
+  const now = nowKey(), sinceK = c.since ? monthKey(parseLocal(dateOnly(c.since))) : now;
+  const debt = { '': 0, USD: 0 }, fut = { '': 0, USD: 0 }, thisMonth = { '': 0, USD: 0 };
   const plans = [], future = Array(6).fill(0);
   for (const e of S.expenses) {
     if (isIncome(e) || e.method !== c.id) continue;
-    const n = nInst(e), first = firstInstallmentKey(e);
+    const cur = entryCur(e), n = nInst(e), first = firstInstallmentKey(e);
     let rem = 0, remCount = 0;
     for (let k = 0; k < n; k++) {
-      const key = first + k, v = installmentAmount(e, k);
+      const key = first + k, v = instCur(e, k);
+      if (key <= now && key >= sinceK) debt[cur] += v;
+      if (key > now) fut[cur] += v;
       if (key >= now) { rem += v; remCount++; }
-      if (key === now) thisMonth += v;
-      if (key >= now && key < now + 6) future[key - now] += v;
+      if (key === now) thisMonth[cur] += v;
+      if (key >= now && key < now + 6) future[key - now] += toBase(v, cur, rateOf(e));
     }
-    outstanding += rem;
     if (remCount > 0) {
       const current = Math.min(Math.max(now - first + 1, 0), n);
-      plans.push({ e, n, current, rem, cuota: installmentAmount(e, 0), startsLater: first > now });
+      plans.push({ e, cur, n, current, rem: r2(rem), cuota: instCur(e, 0), startsLater: first > now });
     }
   }
   for (const r of S.recurring) {
     if (isIncome(r) || r.method !== c.id) continue;
-    const v = baseAmount(r);
-    if (ruleActive(r, now)) { outstanding += v; thisMonth += v; }
-    for (let i = 0; i < 6; i++) if (ruleActive(r, now + i)) future[i] += v;
-    if (ruleActive(r, now) || ymKey(r.start) > now) plans.push({ e: r, fixed: true, rem: ruleActive(r, now) ? v : 0, cuota: v });
+    const cur = entryCur(r), v = Number(r.amount);
+    for (let k = Math.max(sinceK, ymKey(r.start)); k <= now; k++) if (ruleActive(r, k)) debt[cur] += v;
+    if (ruleActive(r, now)) thisMonth[cur] += v;
+    for (let i = 0; i < 6; i++) if (ruleActive(r, now + i)) future[i] += toBase(v, cur);
+    if (ruleActive(r, now) || ymKey(r.start) > now) plans.push({ e: r, cur, fixed: true, rem: ruleActive(r, now) ? v : 0, cuota: v });
   }
-  plans.sort((a, b) => b.rem - a.rem);
+  for (const t of S.transfers) if (t.kind === 'payment' && t.to === c.id) debt[t.cur === USD ? USD : ''] -= Number(t.toAmount) || 0;
+  debt[''] = r2(debt['']); debt.USD = r2(debt.USD);
+  plans.sort((a, b) => toBase(b.rem, b.cur) - toBase(a.rem, a.cur));
+  const owed = Math.max(debt[''], 0) + fut[''] + toBase(Math.max(debt.USD, 0) + fut.USD, USD);
   const limit = Number(c.limit) || 0;
-  return { outstanding: r2(outstanding), thisMonth: r2(thisMonth), plans, future, limit, util: limit ? outstanding / limit : 0, available: r2(limit - outstanding) };
+  return { debt, fut, thisMonth, plans, future, limit, outstanding: r2(owed), util: limit ? owed / limit : 0, available: r2(limit - owed),
+    hasUSD: !!(debt.USD || fut.USD || thisMonth.USD) };
 }
 
 // ---------- Componentes ----------
@@ -223,8 +285,9 @@ const header = (title, action = 'new-expense') => `
   <h1 class="large-title">${title}</h1>`;
 function entryRow(x) {
   const c = cat(x.category), inc = isIncome(x);
-  const cd = !inc && x.method && x.method !== CASH ? card(x.method) : null;
-  const sub = [x.fixed ? 'Fijo' : null, x.note ? x.category : null, cd ? cd.name : null, x.n > 1 ? `cuota ${x.k + 1}/${x.n}` : null, isUSD(x) ? (x.n > 1 ? fmtUSD(r2(x.amount / x.n)) : fmtUSD(x.amount)) : null].filter(Boolean).join(' · ') || dayLabel(x.date);
+  const cd = !inc && isCardM(x.method) ? card(x.method) : null;
+  const ac = !cd && S.accounts.length > 1 ? account(x.method) : null;
+  const sub = [x.fixed ? 'Fijo' : null, x.note ? x.category : null, cd ? cd.name : ac ? ac.name : null, x.n > 1 ? `cuota ${x.k + 1}/${x.n}` : null, isUSD(x) ? (x.n > 1 ? fmtUSD(r2(x.amount / x.n)) : fmtUSD(x.amount)) : null].filter(Boolean).join(' · ') || dayLabel(x.date);
   return `<button class="row with-icon" data-action="edit-expense" data-id="${esc(x.id)}">
     ${icon(c)}
     <span class="ri"><b>${esc(x.note || x.category)}</b><small>${esc(sub)}</small></span>
@@ -257,7 +320,7 @@ function renderHome() {
   const budgetTotal = Object.values(S.budgets).reduce((s, v) => s + Number(v), 0);
   const pct = budgetTotal ? spent / budgetTotal : 0;
   const rows = byCategory(exp);
-  const onCard = sumV(exp.filter((e) => e.method && e.method !== CASH));
+  const onCard = sumV(exp.filter((e) => isCardM(e.method)));
   const fixedSpent = sumV(exp.filter((e) => e.fixed));
   let delta = '';
   if (prevSpent > 0) {
@@ -299,18 +362,21 @@ function renderHome() {
 
 function renderList() {
   const q = S.query.trim().toLowerCase();
-  const filters = ['Todas', 'Ingresos', 'Fijos', 'Tarjeta', ...CATS.map((c) => c.name)];
+  const filters = ['Todas', 'Ingresos', 'Fijos', 'Tarjeta', 'Transferencias', ...CATS.map((c) => c.name)];
   const items = monthEntries(S.offset)
     .filter((e) => S.catFilter === 'Todas'
       || (S.catFilter === 'Ingresos' && isIncome(e))
       || (S.catFilter === 'Fijos' && e.fixed)
-      || (S.catFilter === 'Tarjeta' && !isIncome(e) && e.method && e.method !== CASH)
+      || (S.catFilter === 'Tarjeta' && !isIncome(e) && isCardM(e.method))
       || e.category === S.catFilter)
     .filter((e) => !q || (e.note || '').toLowerCase().includes(q) || e.category.toLowerCase().includes(q))
+    .concat(S.catFilter === 'Todas' || S.catFilter === 'Transferencias' ? transfersForMonth(nowKey() + S.offset)
+      .filter((t) => !q || transferTitle(t).toLowerCase().includes(q) || (t.note || '').toLowerCase().includes(q)) : [])
+    .filter((e) => S.catFilter !== 'Transferencias' || e.isTransfer)
     .sort(sortDesc);
   const groups = {};
   items.forEach((e) => (groups[e.date] = groups[e.date] || []).push(e));
-  const net = (list) => sumV(incomesOf(list)) - sumV(expensesOf(list));
+  const net = (list) => { const l = list.filter((e) => !e.isTransfer); return sumV(incomesOf(l)) - sumV(expensesOf(l)); };
   $('view-list').innerHTML = `
     ${header('Movimientos')}
     ${monthPicker()}
@@ -319,68 +385,126 @@ function renderList() {
       <input id="search" type="search" placeholder="Buscar" value="${esc(S.query)}">
     </label>
     <div class="chips">${filters.map((n) => {
-      const lbl = n === 'Todas' ? n : n === 'Ingresos' ? '💰 Ingresos' : n === 'Tarjeta' ? '💳 Tarjeta' : n === 'Fijos' ? '📌 Fijos' : cat(n).emoji + ' ' + n;
+      const lbl = n === 'Todas' ? n : n === 'Ingresos' ? '💰 Ingresos' : n === 'Tarjeta' ? '💳 Tarjeta' : n === 'Transferencias' ? '⇄ Transferencias' : n === 'Fijos' ? '📌 Fijos' : cat(n).emoji + ' ' + n;
       return `<button class="chip ${S.catFilter === n ? 'on' : ''}" data-action="filter" data-cat="${n}">${lbl}</button>`;
     }).join('')}</div>
     ${items.length ? Object.entries(groups).map(([date, list]) => {
       const n = net(list);
       return `<div class="section-h"><span>${dayLabel(date)}</span><span>${n > 0 ? '+' : n < 0 ? '-' : ''}${fmt(Math.abs(n))}</span></div>
-      <div class="group">${list.map(entryRow).join('')}</div>`;
+      <div class="group">${list.map((x) => x.isTransfer ? transferRow(x) : entryRow(x)).join('')}</div>`;
     }).join('')
       : `<div class="empty"><b>Nada por acá</b>${q || S.catFilter !== 'Todas' ? 'Probá con otra búsqueda o filtro.' : 'Todavía no hay movimientos este mes.'}</div>`}
   `;
 }
 
+function transfersForMonth(key) {
+  return S.transfers.filter((t) => monthKey(parseLocal(t.date)) === key).map((t) => ({ ...t, isTransfer: true }));
+}
+function transferTitle(t) {
+  if (t.kind === 'payment') return 'Pago ' + (card(t.to)?.name || 'tarjeta');
+  if (t.kind === 'adjust') return (account(t.to)?.type === 'invest' ? 'Valor · ' : 'Ajuste · ') + (account(t.to)?.name || '');
+  return t.note || 'Transferencia';
+}
+function transferRow(t) {
+  const from = account(t.from), to = account(t.to) || card(t.to);
+  const sub = t.kind === 'adjust' ? (t.note || 'Corrección manual')
+    : [from?.name, to?.name].filter(Boolean).join(' → ') + (t.kind === 'payment' && t.cur === USD ? ' · ' + fmtUSD(t.toAmount) : '') + (t.kind === 'payment' && t.note ? ' · ' + t.note : '');
+  const amt = t.kind === 'adjust' ? `${t.toAmount < 0 ? '-' : '+'}${fmtCur(Math.abs(t.toAmount), accCur(account(t.to)))}` : fmtCur(t.amount, accCur(from));
+  return `<button class="row with-icon" data-action="edit-transfer" data-id="${esc(t.id)}">
+    <span class="ci" style="background:#8E8E93">${t.kind === 'payment' ? '💳' : t.kind === 'adjust' ? '✏️' : '⇄'}</span>
+    <span class="ri"><b>${esc(transferTitle(t))}</b><small>${esc(sub)}</small></span>
+    <span class="amt muted">${amt}</span>
+  </button>`;
+}
+function accountRow(a) {
+  const bal = accountBalance(a), cur = accCur(a), t = ACC_TYPES[a.type] || ACC_TYPES.bank;
+  const goal = Number(a.goal) || 0, p = goal ? Math.max(bal, 0) / goal : 0;
+  let sub = t.label + (cur === USD ? ' · USD' : '');
+  if (goal) {
+    sub = `${Math.round(p * 100)}% de ${fmtCur(goal, cur)}`;
+    if (a.goalDate && bal < goal) {
+      const months = ymKey(a.goalDate) - nowKey() + 1;
+      if (months > 0) sub += ` · ${fmtCur(r2((goal - bal) / months), cur)}/mes`;
+    }
+  }
+  return `<button class="row with-icon ${goal ? 'brow' : ''}" data-action="edit-account" data-id="${esc(a.id)}">
+    ${goal ? '<div class="top">' : ''}${accIcon(a)}
+    <span class="ri"><b>${esc(a.name)}</b><small>${esc(sub)}</small></span>
+    <span class="amt ${bal < 0 ? 'danger' : ''}">${bal < 0 ? '-' : ''}${fmtCur(Math.abs(bal), cur)}${cur === USD ? `<small>≈ ${fmt(Math.abs(accountBase(a)))}</small>` : ''}</span>
+    ${goal ? `</div><div class="progress ${p >= 1 ? '' : ''}"><i style="width:${Math.min(p, 1) * 100}%;background:var(--green)"></i></div>` : ''}
+  </button>`;
+}
+function debtLine(s) {
+  const parts = [];
+  if (s.debt[''] || !s.hasUSD) parts.push(fmt(Math.max(s.debt[''], 0)));
+  if (s.hasUSD) parts.push(fmtUSD(Math.max(s.debt.USD, 0)));
+  return parts.join(' + ');
+}
 function renderCards() {
+  const avail = S.accounts.filter((a) => a.type === 'cash' || a.type === 'bank');
+  const saved = S.accounts.filter((a) => a.type === 'savings' || a.type === 'invest');
+  const have = S.accounts.reduce((s, a) => s + accountBase(a), 0);
   const stats = S.cards.map((c) => ({ c, s: cardStats(c) }));
+  const owe = stats.reduce((a, x) => a + x.s.outstanding, 0);
   const totLimit = stats.reduce((a, x) => a + x.s.limit, 0);
-  const totOut = stats.reduce((a, x) => a + x.s.outstanding, 0);
-  const totMonth = stats.reduce((a, x) => a + x.s.thisMonth, 0);
   const future = Array(6).fill(0); stats.forEach((x) => x.s.future.forEach((v, i) => (future[i] += v)));
   const maxF = Math.max(...future, 1);
-  const util = totLimit ? totOut / totLimit : 0;
+  const util = totLimit ? owe / totLimit : 0;
+  const net = have - owe;
   $('view-cards').innerHTML = `
-    ${header('Tarjetas', 'new-card')}
-    ${!S.cards.length ? `<div class="empty"><b>Sin tarjetas</b>Agregá tu tarjeta con su límite para medir la utilización y las cuotas.</div>
-      <button class="btn" data-action="new-card">Agregar tarjeta</button>` : `
+    ${header('Cuentas', 'new-account')}
     <div class="card hero">
-      <small>Utilización total del crédito</small>
-      <div class="big">${Math.round(util * 100)}%</div>
-      <div class="progress ${utilClass(util)}"><i style="width:${Math.min(util, 1) * 100}%"></i></div>
-      <div class="meta"><span>Deuda ${fmt(totOut)}</span><span>Límite ${fmt(totLimit)}</span></div>
+      <small>Patrimonio neto</small>
+      <div class="big ${net < 0 ? 'neg' : ''}">${net < 0 ? '-' : ''}${fmt(Math.abs(net))}</div>
       <div class="split">
-        <div><small>A pagar este mes</small><b>${fmt(totMonth)}</b></div>
-        <div><small>Disponible</small><b>${fmt(totLimit - totOut)}</b></div>
+        <div><small class="income">Tengo</small><b>${fmt(have)}</b></div>
+        <div><small class="danger">Debo</small><b>${fmt(owe)}</b></div>
       </div>
     </div>
+    ${S.cfg.setupPending ? `<div class="card setup">
+      <b>Configurá tus cuentas</b>
+      <p>Poné cuánto efectivo tenés hoy, agregá tus cuentas del banco y asociá cada tarjeta a la cuenta desde la que la pagás. Lo que cargaste antes queda en Efectivo.</p>
+      <div class="actions"><button class="btn small" data-action="edit-account" data-id="${CASH}">Empezar</button><button class="link" data-action="setup-done">Listo</button></div>
+    </div>` : ''}
+    <div class="quick">
+      <button data-action="new-account"><span>＋</span>Cuenta</button>
+      <button data-action="new-transfer"><span>⇄</span>Transferir</button>
+      <button data-action="new-card"><span>💳</span>Tarjeta</button>
+    </div>
+    <div class="section-h"><span>Disponible</span></div>
+    <div class="group">${avail.map(accountRow).join('') || '<div class="row"><span class="val">Sin cuentas</span></div>'}</div>
+    ${saved.length ? `<div class="section-h"><span>Ahorro e inversiones</span></div>
+      <div class="group">${saved.map(accountRow).join('')}</div>` : ''}
+    <div class="section-h"><span>Tarjetas</span>${S.cards.length ? `<span>${Math.round(util * 100)}% del crédito usado</span>` : ''}</div>
+    ${!S.cards.length ? `<div class="group"><button class="row blue" data-action="new-card">Agregar tarjeta de crédito<span></span></button></div>` : ''}
     ${stats.map(({ c, s }) => `
       <button class="ccard" style="background:${cardColor(c)}" data-action="edit-card" data-id="${esc(c.id)}">
         <div class="cname"><span>${esc(c.name)}</span><span>${Math.round(s.util * 100)}%</span></div>
         <div class="chip-ic"></div>
-        <small>Disponible</small>
-        <div class="avail">${fmt(s.available)}</div>
+        <small>Saldo a pagar</small>
+        <div class="avail ${s.hasUSD && s.debt[''] ? 'two' : ''}">${debtLine(s)}</div>
         <div class="progress ${utilClass(s.util)}"><i style="width:${Math.min(s.util, 1) * 100}%"></i></div>
-        <div class="meta"><span>Usado ${fmt(s.outstanding)} de ${fmt(s.limit)}</span><span>${c.closingDay ? 'Cierra el ' + c.closingDay : ''}</span></div>
+        <div class="meta"><span>Disponible ${fmt(s.available)} de ${fmt(s.limit)}</span><span>${c.closingDay ? 'Cierra el ' + c.closingDay : ''}</span></div>
       </button>
+      <button class="btn pay" data-action="pay-card" data-id="${esc(c.id)}">Pagar resumen${account(c.payFrom) ? ' desde ' + esc(account(c.payFrom).name) : ''}</button>
       ${s.plans.length ? `
-        <div class="section-h"><span>Cuotas · ${esc(c.name)}</span><span>${fmt(s.thisMonth)} este mes</span></div>
+        <div class="section-h"><span>Cuotas · ${esc(c.name)}</span></div>
         <div class="group">${s.plans.map((p) => `
           <button class="row with-icon" data-action="edit-expense" data-id="${esc(p.e.id)}">
             ${icon(cat(p.e.category))}
             <span class="ri"><b>${esc(p.e.note || p.e.category)}</b>
-              <small>${p.fixed ? `Fijo · ${fmt(p.cuota)}/mes · ${p.e.end ? 'hasta ' + ymLabel(p.e.end) : 'sin fin'}` : p.n > 1 ? (p.startsLater ? `Empieza el mes que viene · ${p.n} cuotas` : `Cuota ${p.current} de ${p.n}`) + ` · ${fmt(p.cuota)}/mes` : 'Un pago'}</small></span>
-            <span class="amt">${fmt(p.rem)}</span>
+              <small>${p.fixed ? `Fijo · ${fmtCur(p.cuota, p.cur)}/mes · ${p.e.end ? 'hasta ' + ymLabel(p.e.end) : 'sin fin'}` : p.n > 1 ? (p.startsLater ? `Empieza el mes que viene · ${p.n} cuotas` : `Cuota ${p.current} de ${p.n}`) + ` · ${fmtCur(p.cuota, p.cur)}/mes` : 'Un pago'}</small></span>
+            <span class="amt">${fmtCur(p.rem, p.cur)}</span>
           </button>`).join('')}
-        </div>
-        <p class="footer-note">A la derecha, lo que resta pagar de cada compra.</p>` : ''}
+        </div>` : ''}
     `).join('')}
-    <div class="section-h"><span>Próximos 6 meses</span></div>
+    ${S.cards.length ? `<div class="section-h"><span>Cuotas próximos 6 meses</span></div>
     <div class="card">
       <div class="months">${future.map((v, i) => `
         <div><b>${v ? compact(v) : ''}</b><i style="height:${(v / maxF) * 80}px"></i><span>${keyLabel(nowKey() + i, true)}</span></div>`).join('')}
       </div>
     </div>
-    <p class="footer-note">Cuánto vas a pagar de tarjeta cada mes por las cuotas ya registradas.</p>`}
+    <p class="footer-note">Lo que vas a pagar de tarjeta cada mes por las cuotas ya registradas (en dólares, convertido a ${esc(S.cfg.currency)}).</p>` : ''}
   `;
 }
 
@@ -390,7 +514,7 @@ function fixedSection() {
   const net = rules.filter((r) => ruleActive(r, key)).reduce((s, r) => s + (isIncome(r) ? 1 : -1) * baseAmount(r), 0);
   return `<div class="section-h"><span>Fijos mensuales</span><button data-action="new-fixed">Agregar</button></div>
     ${rules.length ? `<div class="group">${rules.map((r) => {
-      const on = ruleActive(r, key), cd = r.method && r.method !== CASH ? card(r.method) : null;
+      const on = ruleActive(r, key), cd = isCardM(r.method) ? card(r.method) : account(r.method);
       return `<button class="row with-icon" data-action="edit-expense" data-id="${esc(r.id)}" style="${on ? '' : 'opacity:.5'}">
         ${icon(cat(r.category))}
         <span class="ri"><b>${esc(r.note || r.category)}</b><small>${esc(ruleRange(r))}${cd ? ' · ' + esc(cd.name) : ''} · día ${r.day}${isUSD(r) ? ' · ' + fmtUSD(r.amount) : ''}</small></span>
@@ -466,7 +590,12 @@ function renderSettings() {
       <button class="row blue" data-action="export">Exportar CSV<span></span></button>
       <button class="row danger" data-action="wipe">Borrar datos de este dispositivo</button>
     </div>
-    <p class="footer-note">${S.expenses.length} movimientos, ${S.recurring.length} fijos y ${S.cards.length} tarjetas guardados. Borrar los datos locales no toca tu Google Sheet.</p>
+    <p class="footer-note">${S.expenses.length} movimientos, ${S.recurring.length} fijos, ${S.accounts.length} cuentas y ${S.cards.length} tarjetas guardados. Borrar los datos locales no toca tu Google Sheet.</p>
+    <div class="section-h"><span>Acerca de</span></div>
+    <div class="group">
+      <div class="row"><span>Versión</span><span class="val" id="app-version">${APP_VERSION}</span></div>
+    </div>
+    <p class="footer-note center">Mis Gastos v${APP_VERSION}</p>
   `;
 }
 
@@ -514,6 +643,27 @@ function deleteRecurring(id) {
   S.recurring = S.recurring.filter((r) => r.id !== id);
   enqueue({ type: 'deleteRecurring', id });
 }
+function upsertAccount(a) {
+  a.updated = new Date().toISOString();
+  const i = S.accounts.findIndex((x) => x.id === a.id);
+  if (i >= 0) S.accounts[i] = a; else S.accounts.push(a);
+  enqueue({ type: 'account', account: a });
+}
+function deleteAccount(id) {
+  S.accounts = S.accounts.filter((a) => a.id !== id);
+  enqueue({ type: 'deleteAccount', id });
+}
+function upsertTransfer(t) {
+  t.updated = new Date().toISOString();
+  if (!t.created) t.created = t.updated;
+  const i = S.transfers.findIndex((x) => x.id === t.id);
+  if (i >= 0) S.transfers[i] = t; else S.transfers.push(t);
+  enqueue({ type: 'transfer', transfer: t });
+}
+function deleteTransfer(id) {
+  S.transfers = S.transfers.filter((t) => t.id !== id);
+  enqueue({ type: 'deleteTransfer', id });
+}
 function deleteCard(id) {
   S.cards = S.cards.filter((c) => c.id !== id);
   enqueue({ type: 'deleteCard', id });
@@ -535,7 +685,13 @@ async function sync(manual = false) {
   try {
     const data = await api({ action: 'sync', ops });
     S.queue = S.queue.slice(ops.length);
-    if (!S.queue.length) { S.expenses = data.expenses; S.budgets = data.budgets; S.cards = data.cards || []; S.recurring = data.recurring || []; }
+    if (!S.queue.length) {
+      S.expenses = data.expenses; S.budgets = data.budgets; S.cards = data.cards || []; S.recurring = data.recurring || [];
+      // Un script de una versión anterior no devuelve cuentas: se conservan las locales.
+      if (Array.isArray(data.accounts) && data.accounts.length) S.accounts = data.accounts;
+      if (Array.isArray(data.transfers)) S.transfers = data.transfers;
+      ensureCash();
+    }
     S.lastSync = new Date().toISOString();
     persist();
     if (manual) toast('Sincronizado con Google Sheets');
@@ -555,7 +711,9 @@ async function connect() {
   // Sube lo que ya había en el teléfono (el servidor evita duplicados por id).
   S.queue = [
     ...S.cards.map((c) => ({ type: 'card', card: c })),
+    ...S.accounts.map((a) => ({ type: 'account', account: a })),
     ...S.recurring.map((r) => ({ type: 'recurring', rule: r })),
+    ...S.transfers.map((t) => ({ type: 'transfer', transfer: t })),
     ...S.expenses.map((e) => ({ type: 'upsert', expense: e })),
     ...Object.entries(S.budgets).map(([category, amount]) => ({ type: 'budget', category, amount })),
   ];
@@ -582,9 +740,9 @@ function openExpense(id = null, fixed = false) {
   $('f-end-mode').value = rule && rule.end ? 'date' : '';
   $('f-end').value = rule && rule.end ? rule.end : '';
   $('f-note').value = e ? e.note || '' : '';
-  $('f-method').innerHTML = `<option value="${CASH}">Efectivo / débito</option>` +
-    S.cards.map((c) => `<option value="${esc(c.id)}">💳 ${esc(c.name)}</option>`).join('');
-  $('f-method').value = e && e.method && card(e.method) ? e.method : (S.view === 'cards' && S.cards[0] ? S.cards[0].id : CASH);
+  const valid = (m) => account(m) || card(m);
+  S.selMethod = e && valid(e.method) ? e.method : valid(S.cfg.lastMethod) ? S.cfg.lastMethod : CASH;
+  if (!e && account(S.selMethod)) S.selCur = accCur(account(S.selMethod));
   $('f-inst').innerHTML = Array.from({ length: 36 }, (_, i) => `<option value="${i + 1}">${i + 1 === 1 ? '1 pago' : i + 1 + ' cuotas'}</option>`).join('');
   $('f-inst').value = e ? String(nInst(e)) : '1';
   $('f-delete-group').hidden = !e;
@@ -598,7 +756,8 @@ function applyType() {
   $('sheet-title').textContent = (S.editingId ? 'Editar ' : 'Nuevo ') + (inc ? 'ingreso' : 'gasto');
   const cats = inc ? INCOME_CATS : CATS;
   if (!cats.some((c) => c.name === S.selCat)) S.selCat = cats[0].name;
-  $('f-pay-group').hidden = inc;
+  if (inc && !account(S.selMethod)) S.selMethod = account(S.cfg.lastIncomeMethod) ? S.cfg.lastIncomeMethod : CASH;
+  renderFrom();
   renderCatGrid(); updateCur(); updateRec();
 }
 function updateCur() {
@@ -614,6 +773,13 @@ function updateCur() {
   if (usd) $('f-usd-hint').textContent = !(rate > 0) ? 'Poné la cotización del dólar para convertirlo.'
     : (amount > 0 ? `≈ ${fmt(r2(amount * rate))} a ${rateLabel(rate)} por dólar.` : `Cotización: ${rateLabel(rate)} por dólar.`)
       + (fixed ? ' Cada mes se convierte con la cotización actual.' : '');
+}
+function renderFrom() {
+  const inc = S.selType === 'income';
+  $('f-from-label').textContent = inc ? 'A' : 'Desde';
+  const opts = [...S.accounts.map((a) => ({ id: a.id, label: `${(ACC_TYPES[a.type] || ACC_TYPES.bank).emoji} ${a.name}` })),
+    ...(inc ? [] : S.cards.map((c) => ({ id: c.id, label: `💳 ${c.name}` })))];
+  $('f-from').innerHTML = opts.map((o) => `<button type="button" class="chip ${o.id === S.selMethod ? 'on' : ''}" data-action="pick-from" data-id="${esc(o.id)}">${esc(o.label)}</button>`).join('');
 }
 function renderCatGrid() {
   const cats = S.selType === 'income' ? INCOME_CATS : CATS;
@@ -648,7 +814,7 @@ function formBaseAmount() {
   return a * ($('f-rec').checked ? Number(S.cfg.usdRate) : parseAmount($('f-rate').value));
 }
 function updateInstHint() {
-  const isCard = S.selType === 'expense' && $('f-method').value !== CASH && !$('f-rec').checked;
+  const isCard = S.selType === 'expense' && isCardM(S.selMethod) && !$('f-rec').checked;
   $('f-inst-row').hidden = !isCard;
   const n = Number($('f-inst').value) || 1, amount = formBaseAmount();
   const show = isCard && n > 1 && amount > 0;
@@ -660,8 +826,9 @@ function saveExpense() {
   if (!(amount > 0)) { $('f-amount').focus(); return toast('Ingresá un monto válido'); }
   const date = $('f-date').value || isoDate(new Date());
   const inc = S.selType === 'income';
-  const method = inc ? CASH : $('f-method').value;
-  const installments = method === CASH ? 1 : Number($('f-inst').value) || 1;
+  const method = S.selMethod || CASH;
+  const installments = isCardM(method) && !inc ? Number($('f-inst').value) || 1 : 1;
+  if (inc) S.cfg.lastIncomeMethod = method; else S.cfg.lastMethod = method;
   const wasEditing = !!S.editingId;
   const usd = S.selCur === USD && usdMode();
   const rate = usd ? parseAmount($('f-rate').value) : 0;
@@ -674,7 +841,8 @@ function saveExpense() {
     const end = $('f-end-mode').value === 'date' ? $('f-end').value : '';
     if (end && ymKey(end) < ymKey(start)) return toast('El último mes no puede ser anterior al primero');
     if (S.editingId && !S.editingRule) deleteExpense(S.editingId);   // un gasto común pasó a fijo
-    upsertRecurring({ id: S.editingRule ? S.editingId : uid(), type: S.selType, amount: r2(amount), category: S.selCat,
+    const prevRule = S.editingRule ? S.recurring.find((x) => x.id === S.editingId) : null;
+    upsertRecurring({ id: S.editingRule ? S.editingId : uid(), created: prevRule?.created || new Date().toISOString(), type: S.selType, amount: r2(amount), category: S.selCat,
       note: $('f-note').value.trim(), method, day: d.getDate(), start, end, ...cur, rate: '' });
     $('sheet').close(); render();
     return toast(wasEditing ? 'Fijo actualizado' : 'Fijo mensual guardado');
@@ -705,6 +873,9 @@ function openCard(id = null) {
   $('c-name').value = c ? c.name : '';
   $('c-limit').value = c ? String(c.limit).replace('.', ',') : '';
   $('c-close').value = c && c.closingDay ? c.closingDay : '';
+  $('c-pay').innerHTML = `<option value="">Sin asociar</option>` + S.accounts.filter((a) => a.type === 'bank' || a.type === 'cash')
+    .map((a) => `<option value="${esc(a.id)}">${esc(a.name)}</option>`).join('');
+  $('c-pay').value = c && account(c.payFrom) ? c.payFrom : (S.accounts.find((a) => a.type === 'bank')?.id || '');
   $('c-delete-group').hidden = !c;
   $('csheet').showModal();
   if (!c) setTimeout(() => $('c-name').focus(), 120);
@@ -714,15 +885,184 @@ function saveCard() {
   const closing = parseInt($('c-close').value, 10);
   if (!name) return toast('Poné un nombre, por ejemplo "Visa BROU"');
   if (!(limit > 0)) return toast('Ingresá el límite de crédito');
-  upsertCard({ id: S.editingCardId || uid(), name, limit: r2(limit), closingDay: closing >= 1 && closing <= 31 ? closing : '' });
+  const prev = card(S.editingCardId);
+  upsertCard({ id: S.editingCardId || uid(), name, limit: r2(limit), closingDay: closing >= 1 && closing <= 31 ? closing : '',
+    payFrom: $('c-pay').value, since: prev?.since || new Date().toISOString() });
   $('csheet').close();
   toast('Tarjeta guardada');
+}
+
+// ---------- Hoja de cuenta ----------
+const numStr = (n) => (n || n === 0 ? String(n).replace('.', ',') : '');
+function openAccount(id = null) {
+  const a = id ? account(id) : null;
+  S.editingAccountId = a ? a.id : null;
+  $('a-title').textContent = a ? a.name : 'Nueva cuenta';
+  $('a-name').value = a ? a.name : '';
+  $('a-type').value = a ? a.type : 'bank';
+  $('a-cur-row').hidden = !usdMode();
+  $('a-cur').value = a ? (accUSD(a) ? USD : '') : '';
+  $('a-cur').disabled = !!a;
+  $('a-cur').options[0].textContent = S.cfg.currency;
+  $('a-balance').value = a ? numStr(accountBalance(a)) : '';
+  $('a-goal').value = a && a.goal ? numStr(a.goal) : '';
+  $('a-goal-date').value = a && a.goalDate ? a.goalDate : '';
+  $('a-delete-group').hidden = !a || a.id === CASH;
+  $('a-actions').hidden = !a;
+  const today = isoDate(new Date());
+  const moves = a ? [
+    ...S.expenses.filter((e) => e.method === a.id && e.date <= today).map((e) => ({ ...e, value: baseAmount(e), n: 1, k: 0 })),
+    ...S.transfers.filter((t) => t.from === a.id || t.to === a.id).map((t) => ({ ...t, isTransfer: true })),
+  ].sort(sortDesc).slice(0, 8) : [];
+  $('a-moves').innerHTML = moves.length ? `<div class="section-h"><span>Últimos movimientos</span></div>
+    <div class="group">${moves.map((x) => x.isTransfer ? transferRow(x) : entryRow(x)).join('')}</div>` : '';
+  updateAccountForm();
+  $('asheet').showModal();
+  if (!a) setTimeout(() => $('a-name').focus(), 120);
+}
+function updateAccountForm() {
+  const t = $('a-type').value, a = account(S.editingAccountId);
+  $('a-goal-group').hidden = !(t === 'savings' || t === 'invest');
+  $('a-balance-label').textContent = t === 'invest' ? 'Valor actual' : 'Saldo actual';
+  $('a-hint').textContent = a ? (t === 'invest' ? 'Si cambiás el valor, se registra la ganancia o pérdida sin tocar tu balance del mes.'
+    : 'Si cambiás el saldo, se registra un ajuste por la diferencia.') : 'Desde ahora, el saldo se mueve solo con cada gasto, ingreso o transferencia.';
+}
+function saveAccount() {
+  const name = $('a-name').value.trim(), type = $('a-type').value;
+  const bal = parseAmount($('a-balance').value);
+  if (!name) return toast('Poné un nombre, por ejemplo "BROU caja de ahorro"');
+  const goal = parseAmount($('a-goal').value);
+  const extra = { goal: (type === 'savings' || type === 'invest') && goal > 0 ? r2(goal) : '', goalDate: (type === 'savings' || type === 'invest') ? $('a-goal-date').value : '' };
+  const a = account(S.editingAccountId);
+  if (a) {
+    const cur = accountBalance(a);
+    upsertAccount({ ...a, name, type, ...extra });
+    if (!isNaN(bal) && r2(bal) !== cur) {
+      upsertTransfer({ id: uid(), kind: 'adjust', from: '', to: a.id, amount: 0, toAmount: r2(bal - cur), cur: '', rate: '', date: isoDate(new Date()), note: '' });
+    }
+    if (a.id === CASH) S.cfg.setupPending = false;
+  } else {
+    upsertAccount({ id: uid(), name, type, currency: usdMode() ? $('a-cur').value : '', initial: isNaN(bal) ? 0 : r2(bal), since: new Date().toISOString(), ...extra });
+  }
+  persist();
+  $('asheet').close(); render();
+  toast(a ? 'Cuenta actualizada' : 'Cuenta creada');
+}
+function openAdjust(id) {
+  const t = S.transfers.find((x) => x.id === id);
+  if (!t) return;
+  if (confirm(`${transferTitle(t)}: ${t.toAmount < 0 ? '-' : '+'}${fmtCur(Math.abs(t.toAmount), accCur(account(t.to)))}.\n¿Eliminar este ajuste?`)) { deleteTransfer(id); toast('Ajuste eliminado'); }
+}
+
+// ---------- Hoja de transferencia ----------
+function accOptions(sel) {
+  return S.accounts.map((a) => `<option value="${esc(a.id)}" ${a.id === sel ? 'selected' : ''}>${esc(a.name)}${accUSD(a) ? ' (US$)' : ''}</option>`).join('');
+}
+function openTransfer(id = null, fromId = null) {
+  if (S.accounts.length < 2) return toast('Agregá otra cuenta para transferir');
+  const t = id ? S.transfers.find((x) => x.id === id) : null;
+  S.editingTransferId = t ? t.id : null;
+  const from = t ? t.from : fromId || (S.accounts.find((a) => a.type === 'bank') || S.accounts[0]).id;
+  const to = t ? t.to : (S.accounts.find((a) => a.id !== from && a.type === 'cash') || S.accounts.find((a) => a.id !== from)).id;
+  $('t-title').textContent = t ? 'Editar transferencia' : 'Transferir';
+  $('t-from').innerHTML = accOptions(from);
+  $('t-to').innerHTML = accOptions(to);
+  $('t-amount').value = t ? numStr(t.amount) : '';
+  $('t-rate').value = t && t.rate ? numStr(t.rate) : numStr(S.cfg.usdRate);
+  $('t-date').value = t ? t.date : isoDate(new Date());
+  $('t-note').value = t ? t.note || '' : '';
+  $('t-delete-group').hidden = !t;
+  updateTransfer();
+  $('tsheet').showModal();
+  if (!t) setTimeout(() => $('t-amount').focus(), 120);
+}
+function updateTransfer() {
+  const fa = account($('t-from').value), ta = account($('t-to').value);
+  const fc = accCur(fa), tc = accCur(ta), diff = fc !== tc;
+  $('t-cur').textContent = fc === USD ? 'US$' : (money.formatToParts(0).find((p) => p.type === 'currency')?.value || '$');
+  $('t-rate-group').hidden = !diff;
+  const amt = parseAmount($('t-amount').value), rate = parseAmount($('t-rate').value);
+  const show = diff && amt > 0 && rate > 0;
+  $('t-hint').hidden = !show;
+  if (show) $('t-hint').textContent = `Entran ${fmtCur(r2(conv(amt, fc, tc, rate)), tc)} en ${ta.name}.`;
+}
+function saveTransfer() {
+  const from = $('t-from').value, to = $('t-to').value;
+  if (from === to) return toast('Elegí dos cuentas distintas');
+  const amt = parseAmount($('t-amount').value);
+  if (!(amt > 0)) { $('t-amount').focus(); return toast('Ingresá un monto válido'); }
+  const fc = accCur(account(from)), tc = accCur(account(to));
+  const rate = fc !== tc ? parseAmount($('t-rate').value) : 0;
+  if (fc !== tc && !(rate > 0)) return toast('Ingresá la cotización');
+  const prev = S.transfers.find((x) => x.id === S.editingTransferId);
+  upsertTransfer({ ...(prev || {}), id: S.editingTransferId || uid(), kind: 'transfer', from, to, amount: r2(amt),
+    toAmount: r2(conv(amt, fc, tc, rate || 1)), cur: '', rate: rate ? r2(rate) : '', date: $('t-date').value || isoDate(new Date()), note: $('t-note').value.trim() });
+  $('tsheet').close(); render();
+  toast(S.editingTransferId ? 'Transferencia actualizada' : 'Transferencia guardada');
+}
+
+// ---------- Hoja de pago de resumen ----------
+function openPay(cardId, id = null) {
+  const c = card(cardId);
+  if (!c) return;
+  if (!S.accounts.length) return toast('Agregá una cuenta primero');
+  const t = id ? S.transfers.find((x) => x.id === id) : null;
+  S.payCard = c.id; S.editingTransferId = t ? t.id : null;
+  const st = cardStats(c);
+  S.payCur = t ? (t.cur === USD ? USD : '') : (st.debt[''] <= 0 && st.debt.USD > 0 ? USD : '');
+  S.payMode = t ? 'other' : 'total';
+  $('p-title').textContent = 'Pagar ' + c.name;
+  $('p-cur').hidden = !usdMode() || !(st.hasUSD || (t && t.cur === USD));
+  $('p-from').innerHTML = accOptions(t ? t.from : account(c.payFrom) ? c.payFrom : (S.accounts.find((a) => a.type === 'bank') || S.accounts[0]).id);
+  $('p-amount').value = t ? numStr(t.toAmount) : '';
+  $('p-rate').value = t && t.rate ? numStr(t.rate) : numStr(S.cfg.usdRate);
+  $('p-date').value = t ? t.date : isoDate(new Date());
+  $('p-delete-group').hidden = !t;
+  updatePay(true);
+  $('psheet').showModal();
+}
+function updatePay(reset = false) {
+  const c = card(S.payCard), st = cardStats(c), owed = Math.max(st.debt[S.payCur], 0);
+  const editing = S.transfers.find((x) => x.id === S.editingTransferId);
+  const owedShown = editing ? owed + Number(editing.toAmount || 0) * ((editing.cur === USD ? USD : '') === S.payCur ? 1 : 0) : owed;
+  document.querySelectorAll('#p-cur button').forEach((b) => b.classList.toggle('on', b.dataset.cur === S.payCur));
+  document.querySelectorAll('#p-mode button').forEach((b) => b.classList.toggle('on', b.dataset.mode === S.payMode));
+  $('p-owed').textContent = `Saldo a pagar: ${fmtCur(owedShown, S.payCur)}`;
+  $('p-sym').textContent = S.payCur === USD ? 'US$' : (money.formatToParts(0).find((p) => p.type === 'currency')?.value || '$');
+  if (reset) {
+    if (S.payMode === 'total') $('p-amount').value = numStr(r2(owedShown));
+    else if (!editing) $('p-amount').value = '';
+    $('p-amount').readOnly = S.payMode === 'total';
+    $('p-amount').placeholder = S.payMode === 'min' ? 'Mínimo del resumen' : '0';
+  }
+  const fa = account($('p-from').value), fc = accCur(fa), diff = fc !== S.payCur;
+  $('p-rate-group').hidden = !diff;
+  const amt = parseAmount($('p-amount').value), rate = parseAmount($('p-rate').value);
+  const ok = amt > 0 && (!diff || rate > 0);
+  $('p-hint').hidden = !ok;
+  if (ok) {
+    const rest = r2(owedShown - amt);
+    $('p-hint').textContent = `Se descuentan ${fmtCur(r2(conv(amt, S.payCur, fc, rate || 1)), fc)} de ${fa.name}.` +
+      (rest > 0 ? ` Quedan ${fmtCur(rest, S.payCur)} pendientes en la tarjeta.` : '');
+  }
+}
+function savePay() {
+  const amt = parseAmount($('p-amount').value);
+  if (!(amt > 0)) { $('p-amount').focus(); return toast(S.payMode === 'min' ? 'Ingresá el pago mínimo del resumen' : 'Ingresá el monto a pagar'); }
+  const from = $('p-from').value, fc = accCur(account(from)), diff = fc !== S.payCur;
+  const rate = diff ? parseAmount($('p-rate').value) : 0;
+  if (diff && !(rate > 0)) return toast('Ingresá la cotización');
+  const prev = S.transfers.find((x) => x.id === S.editingTransferId);
+  upsertTransfer({ ...(prev || {}), id: S.editingTransferId || uid(), kind: 'payment', from, to: S.payCard, cur: S.payCur, toAmount: r2(amt),
+    amount: r2(conv(amt, S.payCur, fc, rate || 1)), rate: rate ? r2(rate) : '', date: $('p-date').value || isoDate(new Date()), note: '' });
+  $('psheet').close(); render();
+  toast('Pago registrado');
 }
 
 function exportCSV() {
   const rows = [['id', 'tipo', 'fecha', `monto ${S.cfg.currency}`, 'categoria', 'nota', 'medio', 'cuotas', 'moneda original', 'monto original', 'cotizacion']]
     .concat([...S.expenses].sort(sortDesc).map((e) => [e.id, isIncome(e) ? 'ingreso' : 'gasto', e.date, baseAmount(e), e.category, e.note || '',
-      e.method && e.method !== CASH ? (card(e.method)?.name || 'tarjeta') : 'efectivo', nInst(e),
+      card(e.method)?.name || account(e.method)?.name || 'Efectivo', nInst(e),
       isUSD(e) ? USD : S.cfg.currency, e.amount, isUSD(e) ? rateOf(e) : '']));
   const csv = rows.map((r) => r.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\n');
   const a = document.createElement('a');
@@ -748,6 +1088,44 @@ document.addEventListener('click', (ev) => {
     'set-cur': () => { S.selCur = el.dataset.cur; if (S.selCur === USD && !$('f-rate').value && S.cfg.usdRate) $('f-rate').value = String(S.cfg.usdRate).replace('.', ','); updateRec(); },
     'refresh-rate': () => fetchRate(true),
     'pick-cat': () => { S.selCat = el.dataset.cat; renderCatGrid(); },
+    'pick-from': () => {
+      S.selMethod = el.dataset.id;
+      const a = account(S.selMethod);
+      if (a && !S.editingId) S.selCur = accCur(a);
+      renderFrom(); updateRec();
+    },
+    'new-account': () => openAccount(),
+    'edit-account': () => openAccount(el.dataset.id),
+    'close-asheet': () => $('asheet').close(),
+    'save-account': saveAccount,
+    'delete-account': () => {
+      const id = S.editingAccountId;
+      const used = [...S.expenses, ...S.recurring].some((e) => e.method === id) || S.transfers.some((t) => t.from === id || t.to === id);
+      if (!confirm(used ? '¿Eliminar esta cuenta? Sus gastos e ingresos pasan a Efectivo y se borran sus transferencias.' : '¿Eliminar esta cuenta?')) return;
+      S.expenses.filter((e) => e.method === id).forEach((e) => upsertExpense({ ...e, method: CASH }));
+      S.recurring.filter((r) => r.method === id).forEach((r) => upsertRecurring({ ...r, method: CASH }));
+      S.transfers.filter((t) => t.from === id || t.to === id).forEach((t) => deleteTransfer(t.id));
+      S.cards.filter((c) => c.payFrom === id).forEach((c) => upsertCard({ ...c, payFrom: '' }));
+      deleteAccount(id); $('asheet').close(); toast('Cuenta eliminada');
+    },
+    'account-transfer': () => { $('asheet').close(); openTransfer(null, S.editingAccountId); },
+    'new-transfer': () => openTransfer(),
+    'edit-transfer': () => {
+      const t = S.transfers.find((x) => x.id === el.dataset.id);
+      if (!t) return;
+      if (t.kind === 'payment') openPay(t.to, t.id);
+      else if (t.kind === 'adjust') openAdjust(t.id);
+      else openTransfer(t.id);
+    },
+    'close-tsheet': () => $('tsheet').close(),
+    'save-transfer': saveTransfer,
+    'delete-transfer': () => { if (confirm('¿Eliminar este movimiento?')) { deleteTransfer(S.editingTransferId); $('tsheet').close(); $('psheet').close(); toast('Eliminado'); } },
+    'pay-card': () => openPay(el.dataset.id),
+    'close-psheet': () => $('psheet').close(),
+    'pay-cur': () => { S.payCur = el.dataset.cur; updatePay(true); },
+    'pay-mode': () => { S.payMode = el.dataset.mode; updatePay(true); },
+    'save-pay': savePay,
+    'setup-done': () => { S.cfg.setupPending = false; persist(); render(); },
     'save-expense': saveExpense,
     'delete-expense': () => {
       if (S.editingRule) {
@@ -784,7 +1162,8 @@ document.addEventListener('click', (ev) => {
     'export': exportCSV,
     'wipe': () => {
       if (confirm('¿Borrar todos los datos de este dispositivo?')) {
-        S.expenses = []; S.budgets = {}; S.cards = []; S.recurring = []; S.queue = []; persist(); render();
+        S.expenses = []; S.budgets = {}; S.cards = []; S.recurring = []; S.transfers = []; S.accounts = null; S.queue = [];
+        ensureCash(); persist(); render();
         if (connected()) sync(true);
       }
     },
@@ -799,6 +1178,8 @@ document.addEventListener('input', (ev) => {
     const s = $('search'); s.focus(); s.setSelectionRange(pos, pos);
   }
   if (ev.target.id === 'f-amount' || ev.target.id === 'f-rate') updateRec();
+  if (['t-amount', 't-rate'].includes(ev.target.id)) updateTransfer();
+  if (['p-amount', 'p-rate'].includes(ev.target.id)) updatePay();
 });
 document.addEventListener('change', (ev) => {
   if (ev.target.id === 'cfg-currency') { S.cfg.currency = ev.target.value; S.cfg.usdRate = 0; S.cfg.rateDate = ''; persist(); setMoney(); render(); fetchRate(); }
@@ -806,15 +1187,33 @@ document.addEventListener('change', (ev) => {
     const r = parseAmount(ev.target.value);
     if (r > 0) { S.cfg.usdRate = r2(r); S.cfg.rateManual = true; S.cfg.rateDate = new Date().toISOString(); persist(); render(); toast('Cotización guardada'); }
   }
-  if (ev.target.id === 'f-method' || ev.target.id === 'f-inst') updateInstHint();
+  if (ev.target.id === 'f-inst') updateInstHint();
+  if (['t-from', 't-to'].includes(ev.target.id)) updateTransfer(true);
+  if (ev.target.id === 'p-from') updatePay();
+  if (ev.target.id === 'a-type') updateAccountForm();
   if (['f-rec', 'f-end-mode', 'f-end', 'f-date'].includes(ev.target.id)) updateRec();
 });
-['sheet', 'bsheet', 'csheet'].forEach((id) => $(id).addEventListener('click', (ev) => { if (ev.target.id === id) ev.target.close(); }));
+['sheet', 'bsheet', 'csheet', 'asheet', 'tsheet', 'psheet'].forEach((id) => $(id).addEventListener('click', (ev) => { if (ev.target.id === id) ev.target.close(); }));
 $('f-amount').addEventListener('keydown', (ev) => { if (ev.key === 'Enter') saveExpense(); });
 
 window.addEventListener('online', () => sync());
 document.addEventListener('visibilitychange', () => { if (!document.hidden) sync(); });
 if ('serviceWorker' in navigator) window.addEventListener('load', () => navigator.serviceWorker.register('sw.js'));
+
+// ---------- Migración a cuentas (v6) ----------
+function ensureCash() {
+  if (!Array.isArray(S.accounts)) S.accounts = [];
+  if (!account(CASH)) S.accounts.unshift({ id: CASH, name: 'Efectivo', type: 'cash', currency: '', initial: 0, since: new Date().toISOString() });
+}
+if (!Array.isArray(S.accounts)) {
+  ensureCash();
+  const now = new Date().toISOString();
+  S.cards.forEach((c) => { if (!c.since) { c.since = now; if (connected()) S.queue.push({ type: 'card', card: c }); } });
+  if (connected()) S.queue.push({ type: 'account', account: S.accounts[0] });
+  S.cfg.setupPending = true;
+  persist();
+}
+ensureCash();
 
 setMoney();
 show('home');

@@ -33,7 +33,7 @@
     </button>
     <button data-tab="cards">
       <svg viewBox="0 0 24 24"><path d="M20 4H4a2 2 0 00-2 2v12a2 2 0 002 2h16a2 2 0 002-2V6a2 2 0 00-2-2zm0 14H4v-6h16v6zm0-10H4V6h16v2z"/></svg>
-      <span>Tarjetas</span>
+      <span>Cuentas</span>
     </button>
     <button data-tab="budgets">
       <svg viewBox="0 0 24 24"><path d="M12 2a10 10 0 100 20 10 10 0 000-20zm1 15.9V19h-2v-1.1c-1.7-.3-3-1.4-3.1-3h1.9c.1.9.8 1.5 2.2 1.5 1.5 0 1.9-.7 1.9-1.2 0-.7-.4-1.3-2.3-1.7-2.1-.5-3.5-1.3-3.5-3 0-1.4 1.1-2.4 2.9-2.7V5h2v1.1c1.6.4 2.4 1.6 2.5 2.9h-1.9c-.1-.9-.6-1.5-1.9-1.5-1.2 0-1.9.5-1.9 1.3 0 .7.5 1.1 2.3 1.6 1.8.4 3.5 1.2 3.5 3.1 0 1.4-1 2.5-2.6 2.9z"/></svg>
@@ -71,7 +71,8 @@
     </div>
     <div id="f-cats" class="cat-grid"></div>
     <div class="group" id="f-pay-group">
-      <label class="row"><span>Medio de pago</span><select id="f-method"></select></label>
+      <div class="row from-row"><span id="f-from-label">Desde</span></div>
+      <div class="chips from-chips" id="f-from"></div>
       <label class="row" id="f-inst-row" hidden><span>Cuotas</span><select id="f-inst"></select></label>
     </div>
     <p class="hint sheet-hint" id="f-inst-hint" hidden></p>
@@ -121,10 +122,106 @@
       <label class="row"><span>Nombre</span><input id="c-name" type="text" maxlength="30" placeholder="Visa BROU"></label>
       <label class="row"><span>Límite</span><input id="c-limit" inputmode="decimal" placeholder="100.000"></label>
       <label class="row"><span>Día de cierre</span><input id="c-close" inputmode="numeric" placeholder="Opcional (1-31)"></label>
+      <label class="row"><span>Se paga desde</span><select id="c-pay"></select></label>
     </div>
     <p class="hint sheet-hint">Con el día de cierre, las compras hechas después de esa fecha empiezan a pagarse el mes siguiente.</p>
     <div class="group" id="c-delete-group" hidden>
       <button type="button" class="row danger center" data-action="delete-card">Eliminar tarjeta</button>
+    </div>
+  </dialog>
+
+  <!-- Hoja de cuenta -->
+  <dialog id="asheet" class="sheet">
+    <div class="grabber"></div>
+    <header class="sheet-head">
+      <button type="button" class="link" data-action="close-asheet">Cancelar</button>
+      <strong id="a-title">Nueva cuenta</strong>
+      <button type="button" class="link bold" data-action="save-account">Guardar</button>
+    </header>
+    <div class="group" style="margin-top:12px">
+      <label class="row"><span>Nombre</span><input id="a-name" type="text" maxlength="30" placeholder="BROU caja de ahorro"></label>
+      <label class="row"><span>Tipo</span><select id="a-type">
+        <option value="bank">🏦 Banco</option><option value="cash">💵 Efectivo</option>
+        <option value="savings">🐷 Ahorro</option><option value="invest">📈 Inversión</option></select></label>
+      <label class="row" id="a-cur-row"><span>Moneda</span><select id="a-cur"><option value="">UYU</option><option value="USD">USD</option></select></label>
+      <label class="row"><span id="a-balance-label">Saldo actual</span><input id="a-balance" inputmode="decimal" placeholder="0"></label>
+    </div>
+    <p class="hint sheet-hint" id="a-hint"></p>
+    <div class="group" id="a-goal-group" hidden>
+      <label class="row"><span>Meta</span><input id="a-goal" inputmode="decimal" placeholder="Opcional"></label>
+      <label class="row"><span>Para</span><input id="a-goal-date" type="month"></label>
+    </div>
+    <div class="group" id="a-actions" hidden>
+      <button type="button" class="row blue" data-action="account-transfer">⇄ Transferir desde esta cuenta<span></span></button>
+    </div>
+    <div id="a-moves" class="sheet-moves"></div>
+    <div class="group" id="a-delete-group" hidden>
+      <button type="button" class="row danger center" data-action="delete-account">Eliminar cuenta</button>
+    </div>
+  </dialog>
+
+  <!-- Hoja de transferencia -->
+  <dialog id="tsheet" class="sheet">
+    <div class="grabber"></div>
+    <header class="sheet-head">
+      <button type="button" class="link" data-action="close-tsheet">Cancelar</button>
+      <strong id="t-title">Transferir</strong>
+      <button type="button" class="link bold" data-action="save-transfer">Guardar</button>
+    </header>
+    <div class="amount-wrap">
+      <span id="t-cur">$</span>
+      <input id="t-amount" inputmode="decimal" placeholder="0" autocomplete="off">
+    </div>
+    <div class="group">
+      <label class="row"><span>De</span><select id="t-from"></select></label>
+      <label class="row"><span>A</span><select id="t-to"></select></label>
+    </div>
+    <div class="group" id="t-rate-group" hidden>
+      <label class="row"><span>Cotización US$</span><input id="t-rate" inputmode="decimal" placeholder="0"></label>
+    </div>
+    <p class="hint sheet-hint" id="t-hint" hidden></p>
+    <div class="group">
+      <label class="row"><span>Fecha</span><input id="t-date" type="date"></label>
+      <label class="row"><span>Nota</span><input id="t-note" type="text" maxlength="80" placeholder="Ej.: retiro del cajero"></label>
+    </div>
+    <p class="hint sheet-hint">Las transferencias no cuentan como gasto ni como ingreso.</p>
+    <div class="group" id="t-delete-group" hidden>
+      <button type="button" class="row danger center" data-action="delete-transfer">Eliminar transferencia</button>
+    </div>
+  </dialog>
+
+  <!-- Hoja de pago de resumen -->
+  <dialog id="psheet" class="sheet">
+    <div class="grabber"></div>
+    <header class="sheet-head">
+      <button type="button" class="link" data-action="close-psheet">Cancelar</button>
+      <strong id="p-title">Pagar resumen</strong>
+      <button type="button" class="link bold" data-action="save-pay">Pagar</button>
+    </header>
+    <div class="segmented" id="p-cur">
+      <button type="button" data-action="pay-cur" data-cur="" class="on">Pesos</button>
+      <button type="button" data-action="pay-cur" data-cur="USD">Dólares</button>
+    </div>
+    <p class="hint center" id="p-owed" style="margin-top:12px"></p>
+    <div class="amount-wrap">
+      <span id="p-sym">$</span>
+      <input id="p-amount" inputmode="decimal" placeholder="0" autocomplete="off">
+    </div>
+    <div class="segmented" id="p-mode" style="margin-bottom:18px">
+      <button type="button" data-action="pay-mode" data-mode="total" class="on">Total</button>
+      <button type="button" data-action="pay-mode" data-mode="min">Mínimo</button>
+      <button type="button" data-action="pay-mode" data-mode="other">Otro monto</button>
+    </div>
+    <div class="group">
+      <label class="row"><span>Desde</span><select id="p-from"></select></label>
+      <label class="row"><span>Fecha</span><input id="p-date" type="date"></label>
+    </div>
+    <div class="group" id="p-rate-group" hidden>
+      <label class="row"><span>Cotización US$</span><input id="p-rate" inputmode="decimal" placeholder="0"></label>
+    </div>
+    <p class="hint sheet-hint" id="p-hint" hidden></p>
+    <div class="group" id="p-delete-group" hidden>
+      <button type="button" class="row danger center" data-action="delete-transfer">Eliminar pago</button>
     </div>
   </dialog>
 
