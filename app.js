@@ -28,7 +28,7 @@ const CARD_COLORS = [
 const CURRENCIES = ['UYU', 'USD', 'ARS', 'EUR', 'BRL', 'CLP', 'MXN', 'COP', 'PEN'];
 const MONTHS = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
 const CASH = 'cash';           // id de la cuenta Efectivo (también usado por datos de versiones anteriores)
-const APP_VERSION = '8.9.0';
+const APP_VERSION = '8.9.1';
 const ACC_TYPES = {
   cash:    { label: 'Efectivo',  emoji: '💵', color: '#34C759' },
   bank:    { label: 'Banco',     emoji: '🏦', color: '#007AFF' },
@@ -1254,9 +1254,13 @@ async function readQR(file) {
   }
   return null;
 }
-function scanTicket() {
+// Pregunta si sacar una foto con la cámara o elegir una imagen de la galería (por ejemplo, una captura).
+function scanTicket() { $('scansheet').showModal(); }
+function scanFrom(camera) {
+  $('scansheet').close();
   const inp = document.createElement('input');
   inp.type = 'file'; inp.accept = 'image/*'; S.extAt = Date.now();
+  if (camera) inp.capture = 'environment';
   inp.onchange = async () => {
     const f = inp.files[0]; if (!f) return;
     toast('Leyendo el ticket…');
@@ -2073,6 +2077,9 @@ document.addEventListener('click', (ev) => {
     'next-month': () => { if (S.offset < 12) { S.offset++; render(); } },
     'new-expense': () => openExpense(),
     'scan-ticket': scanTicket,
+    'scan-camera': () => scanFrom(true),
+    'scan-gallery': () => scanFrom(false),
+    'close-scansheet': () => $('scansheet').close(),
     'paste-cfe': pasteCfe,
     'new-fixed': () => openExpense(null, true),
     'edit-expense': () => openExpense(el.dataset.id),

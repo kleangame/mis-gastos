@@ -351,6 +351,15 @@
   </dialog>
 
   <!-- Foto del recibo -->
+  <dialog id="scansheet" class="sheet small">
+    <div class="grabber"></div>
+    <header class="sheet-head"><span></span><strong>Escanear ticket</strong><button type="button" class="link" data-action="close-scansheet">Cancelar</button></header>
+    <div class="group">
+      <button type="button" class="row blue" data-action="scan-camera">📷 Sacar foto<span></span></button>
+      <button type="button" class="row blue" data-action="scan-gallery">🖼️ Elegir foto o captura<span></span></button>
+    </div>
+  </dialog>
+
   <dialog id="rsheet" class="sheet">
     <div class="grabber"></div>
     <header class="sheet-head"><span></span><strong>Recibo</strong><button type="button" class="link bold" data-action="close-rsheet">Listo</button></header>
