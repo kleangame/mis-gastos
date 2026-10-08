@@ -28,7 +28,7 @@ const CARD_COLORS = [
 const CURRENCIES = ['UYU', 'USD', 'ARS', 'EUR', 'BRL', 'CLP', 'MXN', 'COP', 'PEN'];
 const MONTHS = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
 const CASH = 'cash';           // id de la cuenta Efectivo (también usado por datos de versiones anteriores)
-const APP_VERSION = '8.8.0';
+const APP_VERSION = '8.9.0';
 const ACC_TYPES = {
   cash:    { label: 'Efectivo',  emoji: '💵', color: '#34C759' },
   bank:    { label: 'Banco',     emoji: '🏦', color: '#007AFF' },
@@ -1222,7 +1222,8 @@ function parseCfe(text) {
   const [rut, tipo, serie, nro, monto, fecha] = f.map((x) => x.trim());
   const amount = Number(monto.replace(/[^\d.-]/g, ''));
   const dm = fecha.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
-  if (!(amount > 0) || !dm) return null;
+  // Validación: RUT de 12 dígitos, tipo de CFE numérico, monto positivo y fecha real.
+  if (!/^\d{12}$/.test(rut) || !/^\d{3}$/.test(tipo) || !(amount > 0) || !dm || isNaN(parseLocal(`${dm[3]}-${dm[2].padStart(2, '0')}-${dm[1].padStart(2, '0')}`))) return null;
   const t = Number(tipo);
   return { rut, tipo: t, serie, nro, amount, date: `${dm[3]}-${dm[2].padStart(2, '0')}-${dm[1].padStart(2, '0')}`,
     key: `${rut}-${serie}-${nro}`, type: [102, 112].includes(t) ? 'income' : 'expense', label: CFE_TYPES[t] || 'CFE' };
@@ -1255,22 +1256,74 @@ async function readQR(file) {
 }
 function scanTicket() {
   const inp = document.createElement('input');
-  inp.type = 'file'; inp.accept = 'image/*'; inp.capture = 'environment'; S.extAt = Date.now();
+  inp.type = 'file'; inp.accept = 'image/*'; S.extAt = Date.now();
   inp.onchange = async () => {
     const f = inp.files[0]; if (!f) return;
     toast('Leyendo el ticket…');
     let cfe = null, photo = null;
     try { [cfe, photo] = await Promise.all([readQR(f).then(parseCfe).catch(() => null), shrinkImage(f).catch(() => null)]); }
     catch {}
+    if (!cfe) {
+      toast(ocrWorker ? 'Sin QR. Leyendo el texto del ticket…' : 'Sin QR. Leyendo el texto (la primera vez descarga el lector, ~6 MB)…');
+      try {
+        const t = parseTicketText(await ocrImage(f));
+        if (t) cfe = { ...t, rut: t.rut || (t.name ? 'txt:' + t.name.toLowerCase() : ''), key: '', label: 'Ticket', ocr: true };
+      } catch (err) { console.error(err); }
+    }
     applyScan(cfe, photo);
   };
   inp.click();
 }
+// ---------- Leer el texto del ticket (OCR en el celular, sin internet después de la primera vez) ----------
+let ocrWorker = null;
+const loadScript = (src) => new Promise((res, rej) => { const sc = document.createElement('script'); sc.src = src; sc.onload = res; sc.onerror = rej; document.head.appendChild(sc); });
+async function getOcr() {
+  if (ocrWorker) return ocrWorker;
+  if (!window.Tesseract) await loadScript('ocr/tesseract.min.js');
+  ocrWorker = await Tesseract.createWorker('spa', 1, { workerPath: 'ocr/worker.min.js', corePath: 'ocr/', langPath: 'ocr/', workerBlobURL: false });
+  return ocrWorker;
+}
+async function ocrImage(file) {
+  const img = await createImageBitmap(file);
+  const k = Math.min(2, 1800 / Math.max(img.width, img.height));
+  const c = document.createElement('canvas'); c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);
+  const ctx = c.getContext('2d'); ctx.filter = 'grayscale(1) contrast(1.4)'; ctx.drawImage(img, 0, 0, c.width, c.height);
+  const w = await getOcr();
+  return (await w.recognize(c)).data.text || '';
+}
+// Número con formato uruguayo o inglés: 1.234,56 · 1,234.56 · 619,00 · 619
+function parseNum(t) {
+  t = t.replace(/[^\d.,]/g, '');
+  if (!t) return NaN;
+  const lc = t.lastIndexOf(','), ld = t.lastIndexOf('.');
+  const dec = Math.max(lc, ld);
+  if (dec >= 0 && t.length - dec - 1 === 2) return Number(t.slice(0, dec).replace(/[.,]/g, '') + '.' + t.slice(dec + 1));
+  return Number(t.replace(/[.,]/g, ''));
+}
+function parseTicketText(text) {
+  const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  const NUM = /\d{1,3}(?:[.,\s]\d{3})*(?:[.,]\d{2})?|\d+(?:[.,]\d{2})?/g;
+  const nums = (l) => (l.match(NUM) || []).map(parseNum).filter((n) => n > 0 && n < 1e8);
+  let amount = 0;
+  // 1) Renglón «TOTAL» (no subtotal, no la tabla de IVA); 2) «a pagar» / «importe»; 3) el mayor monto con decimales.
+  const pick = (re) => { for (const l of lines) if (re.test(l) && !/sub\s*-?total|iva|tasa|neto|desc/i.test(l)) { const n = nums(l); if (n.length) return Math.max(...n); } return 0; };
+  amount = pick(/\btotal\b/i) || pick(/a\s*pagar|importe|monto|pagado|transferid/i);
+  if (!amount) { const all = lines.flatMap((l) => (/\d[.,]\d{2}\b/.test(l) ? nums(l) : [])); amount = all.length ? Math.max(...all) : 0; }
+  let date = '';
+  const dm = text.match(/\b(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{2,4})\b/);
+  if (dm) { const y = dm[3].length === 2 ? '20' + dm[3] : dm[3]; const d = `${y}-${dm[2].padStart(2, '0')}-${dm[1].padStart(2, '0')}`; if (!isNaN(parseLocal(d))) date = d; }
+  const rut = (text.match(/\bRUT\D{0,6}(\d{12})\b/i) || text.match(/\b(21\d{10})\b/) || [])[1] || '';
+  // Nombre del comercio: un renglón de las primeras líneas que sea casi todo letras (si no hay uno claro, queda vacío).
+  const clean = (l) => { const letters = (l.match(/[a-záéíóúñ]/gi) || []).length; return letters >= 4 && letters / l.replace(/\s/g, '').length > 0.75 && /[a-záéíóúñ]{3,}/i.test(l); };
+  const name = lines.slice(0, 8).find((l) => clean(l) && !/rut|ticket|factura|consumo|consumidor|final|fecha|cliente|moneda|nro|orden|caja|total|iva/i.test(l)) || '';
+  const income = /recibiste|te transfiri|acreditad|transferencia recibida|dep[oó]sito recibido|cobro recibido/i.test(text);
+  return amount > 0 ? { amount: r2(amount), date, rut, name: name.slice(0, 40), type: income ? 'income' : 'expense' } : null;
+}
 function applyScan(cfe, photo) {
   if (!$('sheet').open || S.editingId) openExpense();
   if (photo) { S.pendingReceipt = photo; showReceiptPreview(photo); }
-  if (!cfe) { S.pendingCfe = null; return toast('No pude leer el QR (¿ticket arrugado?). Probá otra foto más de cerca o «Pegar link del QR». La foto queda adjunta.'); }
-  const dup = S.expenses.find((x) => x.cfe === cfe.key);
+  if (!cfe) { S.pendingCfe = null; return toast('No pude leer el ticket. Completá el monto a mano; la foto queda adjunta.'); }
+  const dup = cfe.key && S.expenses.find((x) => x.cfe === cfe.key);
   S.pendingCfe = cfe;
   S.selType = cfe.type;
   const m = (S.cfg.merchants || {})[cfe.rut];
@@ -1278,12 +1331,12 @@ function applyScan(cfe, photo) {
   if (m?.method && (account(m.method) || (card(m.method) && cfe.type === 'expense'))) S.selMethod = m.method;
   S.selCur = '';
   $('f-amount').value = String(cfe.amount).replace('.', ',');
-  $('f-date').value = cfe.date;
-  if (m?.name && !$('f-note').value) $('f-note').value = m.name;
+  if (cfe.date) $('f-date').value = cfe.date;
+  if (!$('f-note').value) $('f-note').value = m?.name || cfe.name || '';
   $('f-note').placeholder = m?.name ? 'Opcional' : 'Nombre del comercio (lo recuerdo)';
   applyType();
   toast(dup ? '⚠️ Este ticket ya está cargado. Revisá antes de guardar.'
-    : `${cfe.label} leído: ${fmt(cfe.amount)}${m?.name ? ' en ' + m.name : ''}. ${cfe.type === 'income' ? 'Entra a' : 'Sale de'} ${(account(S.selMethod) || card(S.selMethod))?.name || 'efectivo'}: cambialo en «${cfe.type === 'income' ? 'A' : 'Desde'}» si no es así.`);
+    : `${cfe.label} leído${cfe.ocr ? ' (revisá el monto y la fecha)' : ''}: ${fmt(cfe.amount)}${m?.name ? ' en ' + m.name : ''}. ${cfe.type === 'income' ? 'Entra a' : 'Sale de'} ${(account(S.selMethod) || card(S.selMethod))?.name || 'efectivo'}: cambialo en «${cfe.type === 'income' ? 'A' : 'Desde'}» si no es así.`);
   if (!m?.method) { const sel = $('f-from'); sel.classList.add('attn'); setTimeout(() => sel.classList.remove('attn'), 2500); }
 }
 // Plan B: escaneás el QR con la cámara del celular (o Google Lens), copiás el link y lo pegás acá.
@@ -1297,7 +1350,7 @@ async function pasteCfe() {
   applyScan(cfe, $('sheet').open && S.pendingReceipt instanceof Blob ? S.pendingReceipt : null);
 }
 function rememberMerchant(cfe, note) {
-  if (!cfe) return;
+  if (!cfe?.rut) return;
   const prev = (S.cfg.merchants ||= {})[cfe.rut] || {};
   S.cfg.merchants[cfe.rut] = { name: note || prev.name || '', cat: S.selCat, method: S.selMethod };
 }
@@ -1469,7 +1522,7 @@ function saveExpense() {
   upsertExpense({ id, type: S.selType, amount: r2(amount), category: S.selCat, date,
     note: $('f-note').value.trim(), method, installments, ...cur, rate: usd ? r2(rate) : '',
     noBalance: !$('f-paid-row').hidden && $('f-paid').checked,
-    ...(S.pendingCfe ? { cfe: S.pendingCfe.key } : S.editingId ? { cfe: S.expenses.find((x) => x.id === S.editingId)?.cfe || '' } : {}) });
+    ...(S.pendingCfe?.key ? { cfe: S.pendingCfe.key } : S.editingId ? { cfe: S.expenses.find((x) => x.id === S.editingId)?.cfe || '' } : {}) });
   rememberMerchant(S.pendingCfe, $('f-note').value.trim()); S.pendingCfe = null;
   $('sheet').close();
   const d = parseLocal(date);
