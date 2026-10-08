@@ -28,7 +28,7 @@ const CARD_COLORS = [
 const CURRENCIES = ['UYU', 'USD', 'ARS', 'EUR', 'BRL', 'CLP', 'MXN', 'COP', 'PEN'];
 const MONTHS = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
 const CASH = 'cash';           // id de la cuenta Efectivo (también usado por datos de versiones anteriores)
-const APP_VERSION = '8.9.1';
+const APP_VERSION = '8.10.0';
 const ACC_TYPES = {
   cash:    { label: 'Efectivo',  emoji: '💵', color: '#34C759' },
   bank:    { label: 'Banco',     emoji: '🏦', color: '#007AFF' },
@@ -1261,8 +1261,12 @@ function scanFrom(camera) {
   const inp = document.createElement('input');
   inp.type = 'file'; inp.accept = 'image/*'; S.extAt = Date.now();
   if (camera) inp.capture = 'environment';
-  inp.onchange = async () => {
-    const f = inp.files[0]; if (!f) return;
+  inp.onchange = () => { const f = inp.files[0]; if (f) processTicketFile(f); };
+  inp.click();
+}
+// QR de DGI validado → si no, texto del ticket (OCR) → formulario completado para confirmar.
+async function processTicketFile(f) {
+  {
     toast('Leyendo el ticket…');
     let cfe = null, photo = null;
     try { [cfe, photo] = await Promise.all([readQR(f).then(parseCfe).catch(() => null), shrinkImage(f).catch(() => null)]); }
@@ -1275,8 +1279,26 @@ function scanFrom(camera) {
       } catch (err) { console.error(err); }
     }
     applyScan(cfe, photo);
-  };
-  inp.click();
+  }
+}
+// Lo que llegó desde el menú Compartir de Android (captura, comprobante o texto).
+async function handleShare() {
+  history.replaceState(null, '', location.pathname);
+  let c, meta = null, img = null;
+  try {
+    c = await caches.open('mg-share');
+    const m = await c.match('share-meta'); if (m) meta = await m.json();
+    const i = await c.match('share-image'); if (i) img = await i.blob();
+    await c.delete('share-meta'); await c.delete('share-image');
+  } catch {}
+  if (img) return processTicketFile(img);
+  const text = meta?.text || '';
+  if (!text) return toast('No llegó nada para leer');
+  const cfe = parseCfe(text);
+  if (cfe) return applyScan(cfe, null);
+  const t = parseTicketText(text);
+  applyScan(t ? { ...t, rut: t.rut || (t.name ? 'txt:' + t.name.toLowerCase() : ''), key: '', label: 'Comprobante', ocr: true } : null, null);
+  if (!$('f-note').value && t?.name) $('f-note').value = t.name;
 }
 // ---------- Leer el texto del ticket (OCR en el celular, sin internet después de la primera vez) ----------
 let ocrWorker = null;
@@ -1320,8 +1342,10 @@ function parseTicketText(text) {
   // Nombre del comercio: un renglón de las primeras líneas que sea casi todo letras (si no hay uno claro, queda vacío).
   const clean = (l) => { const letters = (l.match(/[a-záéíóúñ]/gi) || []).length; return letters >= 4 && letters / l.replace(/\s/g, '').length > 0.75 && /[a-záéíóúñ]{3,}/i.test(l); };
   const name = lines.slice(0, 8).find((l) => clean(l) && !/rut|ticket|factura|consumo|consumidor|final|fecha|cliente|moneda|nro|orden|caja|total|iva/i.test(l)) || '';
+  const enM = text.match(/\b(?:en|a)\s+([A-ZÁÉÍÓÚÑ][\wÁÉÍÓÚÑáéíóúñ&.' -]{2,30}?)(?=\s+(?:con|por|el|desde)\b|\s*[.\n]|$)/);
+  const name2 = !name && enM ? enM[1].trim() : '';
   const income = /recibiste|te transfiri|acreditad|transferencia recibida|dep[oó]sito recibido|cobro recibido/i.test(text);
-  return amount > 0 ? { amount: r2(amount), date, rut, name: name.slice(0, 40), type: income ? 'income' : 'expense' } : null;
+  return amount > 0 ? { amount: r2(amount), date, rut, name: (name || name2).slice(0, 40), type: income ? 'income' : 'expense' } : null;
 }
 function applyScan(cfe, photo) {
   if (!$('sheet').open || S.editingId) openExpense();
@@ -2298,7 +2322,8 @@ async function boot() {
   show('home');
   if (rateStale()) fetchRate();
   cleanReceipts();
-  if (!S.cfg.askedName) setTimeout(askName, 400);
+  if (new URLSearchParams(location.search).has('share')) setTimeout(handleShare, 300);
+  else if (!S.cfg.askedName) setTimeout(askName, 400);
 }
 $('nsheet').addEventListener('close', () => { if (!S.cfg.askedName) { S.cfg.askedName = true; persist(); } });
 $('n-name').addEventListener('keydown', (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); saveName($('n-name').value); } });
