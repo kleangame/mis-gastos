@@ -1,5 +1,5 @@
 'use strict';
-const VERSION = '1.0.0';
+const VERSION = '1.1.0';
 if (window.parent !== window) document.body.classList.add('embed');
 const DEF = { pairs: 'BTCUSDT,ETHUSDT,SOLUSDT,DOGEUSDT,BNBUSDT,XRPUSDT,ADAUSDT,AVAXUSDT,LINKUSDT,LTCUSDT,DOTUSDT,TRXUSDT', risk: 2, start: 100, cap: 3, maxLev: 3, paperStart: null };
 const S = Object.assign({}, DEF, JSON.parse(localStorage.getItem('nnfx.settings') || '{}'));
@@ -19,6 +19,8 @@ const n2 = (v, d = 2) => (v == null || isNaN(v) ? '—' : v.toLocaleString('es-U
 const side = s => s > 0 ? '<span class="pill long">LONG</span>' : '<span class="pill short">SHORT</span>';
 const cls = v => v > 0 ? 'g' : v < 0 ? 'r' : '';
 const coin = p => p.replace(/USDT$/, '');
+const pair = p => p.replace(/USDT$/, '/USDT');
+let chartPair = null, charts = [];
 
 async function getJSON(u) { const r = await fetch(u, { cache: 'no-store' }); if (!r.ok) throw new Error(r.status); return r.json(); }
 async function klines(p) {
@@ -123,7 +125,7 @@ function curveSVG(pf, start) {
 }
 function tradeRows(list) {
   return `<table><tr><th>Par</th><th>Lado</th><th>Entrada</th><th>Salida</th><th>R</th><th>USDT</th></tr>` + list.slice().reverse().map(t =>
-    `<tr><td>${coin(t.p)}${taken[key(t)] ? ' ✓' : ''}</td><td>${t.s > 0 ? 'L' : 'S'}</td><td>${fdUTC(t.t0)}</td><td>${t.open ? 'abierta' : fdUTC(t.t1)}</td><td class="${cls(t.R)}">${t.open ? '—' : n2(t.R)}</td><td class="${cls(t.pnl)}">${t.open ? '—' : n2(t.pnl)}</td></tr>`).join('') + `</table>`;
+    `<tr><td>${pair(t.p)}${taken[key(t)] ? ' ✓' : ''}</td><td>${t.s > 0 ? 'L' : 'S'}</td><td>${fdUTC(t.t0)}</td><td>${t.open ? 'abierta' : fdUTC(t.t1)}</td><td class="${cls(t.R)}">${t.open ? '—' : n2(t.R)}</td><td class="${cls(t.pnl)}">${t.open ? '—' : n2(t.pnl)}</td></tr>`).join('') + `</table>`;
 }
 function renderPaper() {
   const pp = R.paper, closed = pp.taken.filter(t => !t.open), st = NNFX.stats(closed), bt = R.bt, bs = R.btStats;
@@ -140,15 +142,75 @@ function renderPaper() {
   $('#tab-paper').innerHTML = html;
 }
 function renderPares() {
+  if (chartPair && R.pairs.some(P => P.p === chartPair)) return renderChart(chartPair);
+  chartPair = null;
   const dir = v => v > 0 ? '<span class="g">▲</span>' : v < 0 ? '<span class="r">▼</span>' : '·';
   const rows = R.pairs.map(P => {
     const s = P.state, dist = (s.c - s.sma) / s.atr, inPos = P.open;
     let st = inPos ? side(inPos.s) : '<span class="pill wait">espera</span>';
-    return `<tr><td><b>${coin(P.p)}</b><div class="muted">${px(s.c)}</div></td><td>${dir(s.c - s.sma)} ${n2(dist, 1)}</td><td>${dir(s.aroon)}</td><td>${dir(s.hma)}</td><td>${dir(s.c - s.s200)}</td><td>${st}</td></tr>`;
+    return `<tr data-pair="${P.p}"><td><b>${pair(P.p)}</b><div class="muted">${px(s.c)}</div></td><td>${dir(s.c - s.sma)} ${n2(dist, 1)}</td><td>${dir(s.aroon)}</td><td>${dir(s.hma)}</td><td>${dir(s.c - s.s200)}</td><td>${st} <span class="chev">›</span></td></tr>`;
   }).join('');
-  $('#tab-pares').innerHTML = `<h2>Estado al último cierre</h2><div class="card"><table><tr><th>Par</th><th>SMA50 (ATR)</th><th>Aroon</th><th>HMA</th><th>SMA200</th><th></th></tr>${rows}</table>
+  $('#tab-pares').innerHTML = `<h2>Estado al último cierre · tocá un par para ver la gráfica</h2><div class="card"><table class="tap"><tr><th>Par</th><th>SMA50 (ATR)</th><th>Aroon</th><th>HMA</th><th>SMA200</th><th></th></tr>${rows}</table>
     <div class="note">Para entrar en long tienen que estar todas en ▲ y el precio a 1 ATR o menos de la SMA50 (al revés para short), con un cruce reciente de Aroon o de la SMA50. Datos: ${[...new Set(R.pairs.map(P => P.src))].join(', ')}${R.pairs.some(P => !P.fundOk) ? '; funding no disponible, se calcula sin funding' : ''}.</div></div>`;
+  document.querySelectorAll('tr[data-pair]').forEach(tr => tr.onclick = () => { chartPair = tr.dataset.pair; renderChart(chartPair); scrollTo(0, 0); });
 }
+function aroonUD(h, l, n) {
+  const up = [], dn = [];
+  for (let i = 0; i < h.length; i++) {
+    if (i < n) { up.push(NaN); dn.push(NaN); continue; }
+    let ai = 0, bi = 0; for (let k = 0; k <= n; k++) { if (h[i - n + k] > h[i - n + ai]) ai = k; if (l[i - n + k] < l[i - n + bi]) bi = k; }
+    up.push(ai / n * 100); dn.push(bi / n * 100);
+  }
+  return { up, dn };
+}
+function renderChart(p) {
+  charts.forEach(c => c.remove()); charts = [];
+  const P = R.pairs.find(x => x.p === p), I = P.I, b = P.b, s = P.state, cs = getComputedStyle(document.documentElement);
+  const col = k => cs.getPropertyValue(k).trim();
+  const o = P.open, last = b[b.length - 1];
+  const dir = v => v > 0 ? '<span class="g">▲ sube</span>' : v < 0 ? '<span class="r">▼ baja</span>' : '·';
+  $('#tab-pares').innerHTML = `<div class="row" style="margin-top:12px"><button class="back" id="ch-back">‹ Pares</button><span class="muted">velas diarias</span></div>
+    <div class="card"><div class="row"><div><b style="font-size:20px">${pair(p)}</b><div class="muted">${px(last.c)} USDT</div></div><div>${o ? side(o.s) : '<span class="pill wait">sin posición</span>'}</div></div>
+    <div id="ch-main" class="chart"></div>
+    <div class="legend"><span><i style="background:${col('--b')}"></i>SMA 50</span><span><i style="background:${col('--y')}"></i>HMA 20</span><span><i style="background:${col('--mu')}"></i>SMA 200</span></div>
+    <div class="muted" style="margin-top:8px">Aroon 25</div><div id="ch-aroon" class="chart small"></div>
+    <div class="legend"><span><i style="background:${col('--g')}"></i>Aroon arriba</span><span><i style="background:${col('--r')}"></i>Aroon abajo</span></div>
+    <div class="grid"><div><span>SMA 50</span><span>${px(s.sma)}</span></div><div><span>SMA 200</span><span>${px(s.s200)}</span></div>
+    <div><span>Aroon</span><span>${dir(s.aroon)}</span></div><div><span>HMA 20</span><span>${dir(s.hma)}</span></div>
+    <div><span>ATR 14</span><span>${px(s.atr)}</span></div><div><span>A la SMA 50</span><span>${n2((s.c - s.sma) / s.atr, 1)} ATR</span></div></div>
+    ${o ? `<div class="note">Posición abierta desde ${fdUTC(o.t0)}: entrada ${px(o.e)}, stop ${px(o.sl)}${o.half ? ', TP1 hecho' : `, TP1 ${px(o.tp)}`}.</div>` : ''}
+    <div class="note">Flechas: entradas (▲ long, ▼ short) y salidas (●) de la estrategia. Pellizcá o arrastrá para moverte.</div></div>`;
+  $('#ch-back').onclick = () => { chartPair = null; charts.forEach(c => c.remove()); charts = []; renderPares(); };
+  const opts = h => ({ height: h, layout: { background: { color: 'transparent' }, textColor: col('--mu'), fontSize: 11 }, grid: { vertLines: { visible: false }, horzLines: { color: col('--line') } },
+    rightPriceScale: { borderVisible: false }, timeScale: { borderVisible: false }, crosshair: { mode: 0 }, handleScale: { axisPressedMouseMove: false } });
+  const T = t => Math.floor(t / 1000);
+  const main = LightweightCharts.createChart($('#ch-main'), { ...opts(320), width: $('#ch-main').clientWidth || innerWidth - 60 });
+  const ar = LightweightCharts.createChart($('#ch-aroon'), { ...opts(110), width: $('#ch-aroon').clientWidth || innerWidth - 60, timeScale: { visible: false } });
+  charts = [main, ar];
+  const cd = main.addCandlestickSeries({ upColor: col('--g'), downColor: col('--r'), wickUpColor: col('--g'), wickDownColor: col('--r'), borderVisible: false });
+  cd.setData(b.map(x => ({ time: T(x.t), open: x.o, high: x.h, low: x.l, close: x.c })));
+  const line = (arr, color, w = 2) => { const sr = main.addLineSeries({ color, lineWidth: w, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }); sr.setData(b.map((x, i) => ({ time: T(x.t), value: arr[i] })).filter(d => !isNaN(d.value))); };
+  line(I.bl, col('--b')); line(I.hm, col('--y'), 1.5); line(I.s200, col('--mu'), 1.5);
+  const mk = [];
+  P.trades.forEach(t => { mk.push({ time: T(t.t0), position: t.s > 0 ? 'belowBar' : 'aboveBar', shape: t.s > 0 ? 'arrowUp' : 'arrowDown', color: t.s > 0 ? col('--g') : col('--r') });
+    mk.push({ time: T(t.t1), position: t.s > 0 ? 'aboveBar' : 'belowBar', shape: 'circle', color: t.R > 0 ? col('--g') : col('--r'), text: (t.R > 0 ? '+' : '') + t.R.toFixed(1) + 'R' }); });
+  if (o) {
+    mk.push({ time: T(o.t0), position: o.s > 0 ? 'belowBar' : 'aboveBar', shape: o.s > 0 ? 'arrowUp' : 'arrowDown', color: o.s > 0 ? col('--g') : col('--r'), text: 'abierta' });
+    cd.createPriceLine({ price: o.e, color: col('--mu'), lineWidth: 1, lineStyle: 2, title: 'entrada' });
+    cd.createPriceLine({ price: o.sl, color: col('--r'), lineWidth: 1, lineStyle: 2, title: 'stop' });
+    if (!o.half) cd.createPriceLine({ price: o.tp, color: col('--g'), lineWidth: 1, lineStyle: 2, title: 'TP1' });
+  }
+  mk.sort((a, b) => a.time - b.time); cd.setMarkers(mk);
+  const A = aroonUD(I.h, I.l, NNFX.CFG.aroon);
+  const al = (arr, color) => { const sr = ar.addLineSeries({ color, lineWidth: 1.5, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }); sr.setData(b.map((x, i) => ({ time: T(x.t), value: arr[i] })).filter(d => !isNaN(d.value))); };
+  al(A.up, col('--g')); al(A.dn, col('--r'));
+  const from = T(b[Math.max(0, b.length - 180)].t), to = T(last.t) + 86400 * 3;
+  main.timeScale().setVisibleRange({ from, to }); ar.timeScale().setVisibleRange({ from, to });
+  let sync = false;
+  main.timeScale().subscribeVisibleLogicalRangeChange(r => { if (sync || !r) return; sync = true; ar.timeScale().setVisibleLogicalRange(r); sync = false; });
+  ar.timeScale().subscribeVisibleLogicalRangeChange(r => { if (sync || !r) return; sync = true; main.timeScale().setVisibleLogicalRange(r); sync = false; });
+}
+addEventListener('resize', () => { if (chartPair && charts.length) { charts[0].applyOptions({ width: $('#ch-main').clientWidth || innerWidth - 60 }); charts[1].applyOptions({ width: $('#ch-aroon').clientWidth }); } });
 function renderAjustes() {
   $('#tab-ajustes').innerHTML = `<h2>Cuenta paper</h2><div class="card">
     <label>Saldo inicial (USDT)</label><input id="s-start" type="number" min="10" step="1" value="${S.start}">
