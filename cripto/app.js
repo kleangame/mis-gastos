@@ -1,5 +1,5 @@
 'use strict';
-const VERSION = '1.1.0';
+const VERSION = '1.2.0';
 if (window.parent !== window) document.body.classList.add('embed');
 const DEF = { pairs: 'BTCUSDT,ETHUSDT,SOLUSDT,DOGEUSDT,BNBUSDT,XRPUSDT,ADAUSDT,AVAXUSDT,LINKUSDT,LTCUSDT,DOTUSDT,TRXUSDT', risk: 2, start: 100, cap: 3, maxLev: 3, paperStart: null };
 const S = Object.assign({}, DEF, JSON.parse(localStorage.getItem('nnfx.settings') || '{}'));
@@ -48,6 +48,7 @@ async function load() {
   R = { pairs: out.filter(x => !x.err), errs: out.filter(x => x.err), at: Date.now() };
   compute(); render();
   $('#refresh').disabled = false;
+  loadNews();
 }
 
 function compute() {
@@ -72,6 +73,32 @@ function sizing(t) {
 
 function render() { renderHoy(); renderPaper(); renderPares(); renderAjustes(); }
 
+
+// ---- noticias y sentimiento ----
+const NEWS_URL = 'https://raw.githubusercontent.com/kleangame/mis-gastos/cripto-news/news.json';
+let NEWS = JSON.parse(localStorage.getItem('nnfx.news') || 'null'), FNG = JSON.parse(localStorage.getItem('nnfx.fng') || 'null');
+async function loadNews() {
+  const [n, f] = await Promise.allSettled([fetch(NEWS_URL + '?t=' + Math.floor(Date.now() / 6e5)).then(r => r.ok ? r.json() : Promise.reject()),
+    fetch('https://api.alternative.me/fng/?limit=400').then(r => r.ok ? r.json() : Promise.reject())]);
+  if (n.status === 'fulfilled') { NEWS = n.value; Object.values(NEWS.coins).forEach(c => delete c.seen); try { localStorage.setItem('nnfx.news', JSON.stringify(NEWS)); } catch (e) {} }
+  if (f.status === 'fulfilled') { FNG = f.value.data.map(d => ({ t: +d.timestamp * 1000, v: +d.value })); localStorage.setItem('nnfx.fng', JSON.stringify(FNG)); }
+  if (R) { renderHoy(); if (chartPair) renderChart(chartPair); }
+}
+const FNG_TXT = v => v < 25 ? 'miedo extremo' : v < 45 ? 'miedo' : v <= 55 ? 'neutral' : v < 75 ? 'codicia' : 'codicia extrema';
+const ago = ts => { const m = (Date.now() - ts) / 6e4; return m < 60 ? `hace ${Math.max(1, Math.round(m))} min` : m < 1440 ? `hace ${Math.round(m / 60)} h` : `hace ${Math.round(m / 1440)} d`; };
+const esc = t => t.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const newsList = (items, n) => items.length ? `<div class="news">${items.slice(0, n).map(i => `<a href="${esc(i.link)}" target="_blank" rel="noopener"><span>${esc(i.title)}</span><span class="muted">${esc(i.src || '')} · ${ago(i.ts)}</span></a>`).join('')}</div>` : '<div class="muted">Sin titulares todavía.</div>';
+function fngCard() {
+  if (!FNG || !FNG.length) return '';
+  const v = FNG[0].v, w = FNG.find(d => d.t <= FNG[0].t - 7 * DAY);
+  return `<div class="row"><div><div class="muted">Miedo y codicia (mercado)</div><div class="big" style="font-size:26px">${v} <span class="muted" style="font-size:15px">${FNG_TXT(v)}</span></div></div><div class="muted" style="text-align:right">hace 7 días<br>${w ? w.v : '—'}</div></div><div class="fng"><i style="left:${v}%"></i></div>`;
+}
+function newsCount(k) { return (NEWS && NEWS.coins[k] && NEWS.coins[k].counts) || {}; }
+function heavyNewsDays(k) {
+  const c = newsCount(k), ds = Object.keys(c).sort(), out = new Set();
+  ds.forEach((d, i) => { const prev = ds.slice(Math.max(0, i - 30), i).map(x => c[x]).sort((a, b) => a - b); if (prev.length < 10) return; const med = prev[prev.length >> 1]; if (c[d] >= Math.max(2 * med, med + 15)) out.add(d); });
+  return out;
+}
 function renderHoy() {
   const today = R.today, lastClosed = today - DAY, srcs = [...new Set(R.pairs.map(P => P.src))].join(' + ');
   const pp = R.paper, openPos = pp.stillOpen.filter(t => t.open), unreal = openPos.reduce((a, t) => a + t.eqAt * S.risk / 100 * unrealR(t), 0);
@@ -109,6 +136,7 @@ function renderHoy() {
       <div><span>Precio</span><span>${px(t.price)}</span></div><div><span>Ahora</span><span class="${cls(u)}">${n2(u)} R</span></div></div></div>`;
   }).join('') : `<div class="card empty">Sin posiciones abiertas.</div>`);
   if (R.errs.length) html += `<div class="card note">No se pudo bajar: ${R.errs.map(e => e.p).join(', ')}.</div>`;
+  if (FNG || NEWS) html += `<h2>Mercado y noticias</h2><div class="card">${fngCard()}${NEWS ? `<div style="margin-top:10px">${newsList(NEWS.coins.MARKET ? NEWS.coins.MARKET.items : [], 5)}</div><div class="note">Titulares de Google Noticias, actualizados cada hora (${ago(Date.parse(NEWS.updated))}). Son contexto: la estrategia no los usa para decidir.</div>` : ''}</div>`;
   $('#tab-hoy').innerHTML = html; bindChk();
 }
 function unrealR(t) { const frac = t.half ? 0.5 : 1; return (t.R || 0) + frac * t.s * (t.price - t.e) / t.r - t.cost; }
@@ -173,13 +201,16 @@ function renderChart(p) {
     <div class="card"><div class="row"><div><b style="font-size:20px">${pair(p)}</b><div class="muted">${px(last.c)} USDT</div></div><div>${o ? side(o.s) : '<span class="pill wait">sin posición</span>'}</div></div>
     <div id="ch-main" class="chart"></div>
     <div class="legend"><span><i style="background:${col('--b')}"></i>SMA 50</span><span><i style="background:${col('--y')}"></i>HMA 20</span><span><i style="background:${col('--mu')}"></i>SMA 200</span></div>
+    <div class="legend"><span><b class="mk" style="color:#af52de">■</b>FOMC / CPI</span><span><b class="mk" style="color:${col('--y')}">●</b>vela shock (&gt;2,5 ATR)</span><span><b class="mk" style="color:${col('--b')}">■</b>día con mucha noticia</span></div>
+    <div id="ch-info" class="chinfo muted">Tocá una vela para ver qué pasó ese día.</div>
     <div class="muted" style="margin-top:8px">Aroon 25</div><div id="ch-aroon" class="chart small"></div>
     <div class="legend"><span><i style="background:${col('--g')}"></i>Aroon arriba</span><span><i style="background:${col('--r')}"></i>Aroon abajo</span></div>
     <div class="grid"><div><span>SMA 50</span><span>${px(s.sma)}</span></div><div><span>SMA 200</span><span>${px(s.s200)}</span></div>
     <div><span>Aroon</span><span>${dir(s.aroon)}</span></div><div><span>HMA 20</span><span>${dir(s.hma)}</span></div>
     <div><span>ATR 14</span><span>${px(s.atr)}</span></div><div><span>A la SMA 50</span><span>${n2((s.c - s.sma) / s.atr, 1)} ATR</span></div></div>
     ${o ? `<div class="note">Posición abierta desde ${fdUTC(o.t0)}: entrada ${px(o.e)}, stop ${px(o.sl)}${o.half ? ', TP1 hecho' : `, TP1 ${px(o.tp)}`}.</div>` : ''}
-    <div class="note">Flechas: entradas (▲ long, ▼ short) y salidas (●) de la estrategia. Pellizcá o arrastrá para moverte.</div></div>`;
+    <div class="note">Flechas: entradas (▲ long, ▼ short) y salidas (●) de la estrategia. Pellizcá o arrastrá para moverte.</div></div>
+    <h2>Noticias de ${coin(p)}</h2><div class="card">${NEWS && NEWS.coins[coin(p)] ? newsList(NEWS.coins[coin(p)].items, 8) : '<div class="muted">Sin noticias para este par.</div>'}${FNG ? `<div style="margin-top:12px">${fngCard()}</div>` : ''}</div>`;
   $('#ch-back').onclick = () => { chartPair = null; charts.forEach(c => c.remove()); charts = []; renderPares(); };
   const opts = h => ({ height: h, layout: { background: { color: 'transparent' }, textColor: col('--mu'), fontSize: 11 }, grid: { vertLines: { visible: false }, horzLines: { color: col('--line') } },
     rightPriceScale: { borderVisible: false }, timeScale: { borderVisible: false }, crosshair: { mode: 0 }, handleScale: { axisPressedMouseMove: false } });
@@ -200,7 +231,25 @@ function renderChart(p) {
     cd.createPriceLine({ price: o.sl, color: col('--r'), lineWidth: 1, lineStyle: 2, title: 'stop' });
     if (!o.half) cd.createPriceLine({ price: o.tp, color: col('--g'), lineWidth: 1, lineStyle: 2, title: 'TP1' });
   }
+  const k = coin(p), heavy = heavyNewsDays(k), cnt = newsCount(k), shock = new Set(), dayIdx = {};
+  b.forEach((x, i) => {
+    const d = NNFX.day(x.t); dayIdx[T(x.t)] = i;
+    const fo = EVENTS.fomc.includes(d), cp = EVENTS.cpi.includes(d);
+    if (fo || cp) mk.push({ time: T(x.t), position: 'aboveBar', shape: 'square', color: '#af52de', size: 0.6, text: fo ? 'FOMC' : 'CPI' });
+    if (i > 14 && (x.h - x.l) > 2.5 * I.A[i - 1]) { shock.add(i); mk.push({ time: T(x.t), position: 'belowBar', shape: 'circle', color: col('--y'), size: 0.8 }); }
+    if (heavy.has(d)) mk.push({ time: T(x.t), position: 'aboveBar', shape: 'square', color: col('--b'), size: 0.6, text: 'N' });
+  });
   mk.sort((a, b) => a.time - b.time); cd.setMarkers(mk);
+  main.subscribeClick(e => {
+    if (!e.time || dayIdx[e.time] === undefined) return;
+    const i = dayIdx[e.time], x = b[i], d = NNFX.day(x.t), bits = [];
+    if (EVENTS.fomc.includes(d)) bits.push('FOMC'); if (EVENTS.cpi.includes(d)) bits.push('CPI');
+    if (i > 0) bits.push(`${x.c >= b[i - 1].c ? '+' : ''}${n2((x.c / b[i - 1].c - 1) * 100, 1)}%`);
+    if (i > 14) bits.push(`rango ${n2((x.h - x.l) / I.A[i - 1], 1)} ATR${shock.has(i) ? ' ⚡' : ''}`);
+    if (cnt[d]) bits.push(`${cnt[d]} noticias`);
+    const its = NEWS && NEWS.coins[k] ? NEWS.coins[k].items.filter(n => NNFX.day(n.ts) === d) : [];
+    $('#ch-info').innerHTML = `<b>${fdUTC(x.t)}</b> · ${bits.join(' · ')}${its.length ? newsList(its, 4) : ''}`;
+  });
   const A = aroonUD(I.h, I.l, NNFX.CFG.aroon);
   const al = (arr, color) => { const sr = ar.addLineSeries({ color, lineWidth: 1.5, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }); sr.setData(b.map((x, i) => ({ time: T(x.t), value: arr[i] })).filter(d => !isNaN(d.value))); };
   al(A.up, col('--g')); al(A.dn, col('--r'));

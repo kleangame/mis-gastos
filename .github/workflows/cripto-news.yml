@@ -1,0 +1,26 @@
+name: Noticias cripto
+on:
+  schedule:
+    - cron: '23 * * * *'
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency: cripto-news
+jobs:
+  news:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Generar news.json
+        run: |
+          git fetch origin cripto-news:cripto-news 2>/dev/null && git show cripto-news:news.json > /tmp/news.json || true
+          node cripto/tools/news.mjs /tmp/news.json
+      - name: Publicar en la rama cripto-news
+        run: |
+          mkdir /tmp/pub && cd /tmp/pub && cp /tmp/news.json .
+          git init -q -b cripto-news && git add news.json
+          git -c user.name=github-actions -c user.email=actions@github.com commit -qm "news $(date -u +%FT%H:%MZ)"
+          git push -qf "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" cripto-news
