@@ -1,5 +1,5 @@
 'use strict';
-const VERSION = '1.3.0';
+const VERSION = '1.4.0';
 if (window.parent !== window) document.body.classList.add('embed');
 const DEF = { pairs: 'BTCUSDT,ETHUSDT,SOLUSDT,DOGEUSDT,BNBUSDT,XRPUSDT,ADAUSDT,AVAXUSDT,LINKUSDT,LTCUSDT,DOTUSDT,TRXUSDT', risk: 2, start: 100, cap: 3, maxLev: 3, paperStart: null };
 const S = Object.assign({}, DEF, JSON.parse(localStorage.getItem('nnfx.settings') || '{}'));
@@ -100,6 +100,7 @@ function heavyNewsDays(k) {
   ds.forEach((d, i) => { const prev = ds.slice(Math.max(0, i - 30), i).map(x => c[x]).sort((a, b) => a - b); if (prev.length < 10) return; const med = prev[prev.length >> 1]; if (c[d] >= Math.max(2 * med, med + 15)) out.add(d); });
   return out;
 }
+const CALC = {};
 function renderHoy() {
   const today = R.today, lastClosed = today - DAY, srcs = [...new Set(R.pairs.map(P => P.src))].join(' + ');
   const pp = R.paper, openPos = pp.stillOpen.filter(t => t.open), unreal = openPos.reduce((a, t) => a + t.eqAt * S.risk / 100 * unrealR(t), 0);
@@ -114,13 +115,16 @@ function renderHoy() {
   pp.taken.filter(t => t.t0 === today).forEach(t => {
     const z = sizing(t);
     acts.push(`<div class="card"><div class="row"><b>Abrir ${coin(t.p)}</b>${side(t.s)}</div>
-      <div class="grid"><div><span>Entrada aprox.</span><span>${px(t.e)}</span></div><div><span>Stop</span><span class="r">${px(t.sl0)}</span></div>
-      <div><span>TP1 (50%)</span><span class="g">${px(t.tp)}</span></div><div><span>Stop a</span><span>${n2(z.stopPct, 1)}%</span></div>
+      <div class="grid"><div><span>Entrada aprox.</span><span>${px(t.e)}</span></div><div><span>ATR 14</span><span>${px(Math.abs(t.tp - t.e))}</span></div>
+      <div><span>Stop (−1 ATR)</span><span class="r">${px(t.sl0)}</span></div><div><span>TP1 50% (+1 ATR)</span><span class="g">${px(t.tp)}</span></div>
+      <div><span>Stop a</span><span>${n2(z.stopPct, 1)}%</span></div><div><span>TP1 a</span><span>${n2(z.stopPct, 1)}%</span></div>
       <div><span>Cantidad</span><span>${px(z.qty)} ${coin(t.p)}</span></div><div><span>Nocional</span><span>${n2(z.notional)} USDT</span></div>
       <div><span>Apalancam.</span><span>${z.lev}x aislado</span></div><div><span>Margen</span><span>${n2(z.margin)} USDT</span></div>
       <div><span>Riesgo</span><span>${n2(z.risk$)} USDT</span></div><div><span>Liquidación</span><span>${z.liq ? px(z.liq) : 'no aplica'}</span></div></div>
       <ol class="steps"><li>Orden a mercado ${t.s > 0 ? 'Buy/Long' : 'Sell/Short'} de ${px(z.qty)} ${coin(t.p)}.</li><li>Stop-market reduce-only en ${px(t.sl0)} (todo).</li><li>Take-profit reduce-only en ${px(t.tp)} por la mitad (${px(z.qty / 2)}).</li></ol>
+      <div class="calc" data-calc="${key(t)}"><label>¿Entraste a otro precio? Recalculo todo</label><input type="number" step="any" inputmode="decimal" placeholder="${px(t.e)}"><div class="calc-out"></div></div>
       ${chk(t)}</div>`);
+    CALC[key(t)] = t;
   });
   // salidas en la apertura de hoy
   pp.taken.filter(t => !t.open && t.t1 === today).forEach(t => acts.push(`<div class="card"><div class="row"><b>Cerrar ${coin(t.p)}</b>${side(t.s)}</div><div class="note">Motivo: ${t.why}. Cerrá lo que quede a mercado. Resultado aprox. <b class="${cls(t.R)}">${n2(t.R)} R</b>.</div></div>`));
@@ -139,6 +143,12 @@ function renderHoy() {
   if (R.errs.length) html += `<div class="card note">No se pudo bajar: ${R.errs.map(e => e.p).join(', ')}.</div>`;
   if (FNG || NEWS) html += `<h2>Mercado y noticias</h2><div class="card">${fngCard()}${NEWS ? `<div style="margin-top:10px">${newsList(NEWS.coins.MARKET ? NEWS.coins.MARKET.items : [], 5)}</div><div class="note">Titulares de Google Noticias, actualizados cada hora (${ago(Date.parse(NEWS.updated))}). Son contexto: la estrategia no los usa para decidir.</div>` : ''}</div>`;
   $('#tab-hoy').innerHTML = html; bindChk();
+  document.querySelectorAll('[data-calc]').forEach(el => { const t = CALC[el.dataset.calc], inp = el.querySelector('input'); inp.oninput = () => {
+    const e = parseFloat(String(inp.value).replace(',', '.')); if (!(e > 0)) { el.querySelector('.calc-out').innerHTML = ''; return; }
+    const atr = Math.abs(t.tp - t.e), u = { ...t, e, sl0: e - t.s * atr, tp: e + t.s * atr }, z = sizing(u);
+    el.querySelector('.calc-out').innerHTML = `<div class="grid"><div><span>Stop</span><span class="r">${px(u.sl0)}</span></div><div><span>TP1 50%</span><span class="g">${px(u.tp)}</span></div>
+      <div><span>Cantidad</span><span>${px(z.qty)} ${coin(t.p)}</span></div><div><span>Nocional</span><span>${n2(z.notional)} USDT</span></div><div><span>Apalancam.</span><span>${z.lev}x</span></div><div><span>Margen</span><span>${n2(z.margin)} USDT</span></div></div>`;
+  }; });
 }
 function unrealR(t) { const frac = t.half ? 0.5 : 1; return (t.R || 0) + frac * t.s * (t.price - t.e) / t.r - t.cost; }
 const key = t => `${t.p}|${t.t0}`;
@@ -197,6 +207,50 @@ function nyToUTC(d, h, m) { // hora de Nueva York -> ms UTC
   const nyH = +new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', hour: 'numeric', hourCycle: 'h23' }).format(g);
   return g + (h - nyH) * 36e5;
 }
+
+// ---- cajas de operaciones estilo TradingView (primitive de Lightweight Charts) ----
+function posBoxes(boxes, col) {
+  let chart, series, sel = null;
+  const draw = ctx => {
+    const ts = chart.timeScale(), W = ctx.canvas.width / (window.devicePixelRatio || 1);
+    boxes.forEach(bx => {
+      const x0 = ts.timeToCoordinate(bx.t0), x1 = ts.timeToCoordinate(bx.t1);
+      if (x0 === null || x1 === null || x1 < 0 || x0 > W) return;
+      const xe = Math.max(x1, x0 + 4), yE = series.priceToCoordinate(bx.e), yS = series.priceToCoordinate(bx.sl), yT = series.priceToCoordinate(bx.tp), yX = series.priceToCoordinate(bx.px);
+      const on = sel === bx, a = on ? .32 : .16, w = xe - x0;
+      ctx.fillStyle = `rgba(52,199,89,${a})`; ctx.fillRect(x0, Math.min(yE, yT), w, Math.abs(yT - yE));
+      ctx.fillStyle = `rgba(255,59,48,${a})`; ctx.fillRect(x0, Math.min(yE, yS), w, Math.abs(yS - yE));
+      if (bx.run && (bx.px - bx.tp) * bx.s > 0) { ctx.fillStyle = `rgba(52,199,89,${a * .5})`; ctx.fillRect(x0, Math.min(yT, yX), w, Math.abs(yX - yT)); }
+      ctx.lineWidth = 1;
+      const hl = (y, c, dash) => { ctx.strokeStyle = c; ctx.setLineDash(dash ? [4, 3] : []); ctx.beginPath(); ctx.moveTo(x0, y); ctx.lineTo(xe, y); ctx.stroke(); };
+      hl(yE, col('--mu')); hl(yS, col('--r')); hl(yT, col('--g'));
+      [2, 3].forEach(m => { const y = series.priceToCoordinate(bx.e + bx.s * m * bx.atr); if (y !== null && (bx.px - (bx.e + bx.s * (m - .5) * bx.atr)) * bx.s > 0) hl(y, col('--g'), true); });
+      ctx.setLineDash([]);
+      if (yX !== null && !bx.open) { ctx.strokeStyle = bx.R >= 0 ? col('--g') : col('--r'); ctx.setLineDash([2, 2]); ctx.beginPath(); ctx.moveTo(x0, yE); ctx.lineTo(xe, yX); ctx.stroke(); ctx.setLineDash([]); }
+      if (w > 46 || on) {
+        ctx.font = '10px -apple-system,system-ui,sans-serif'; ctx.textBaseline = 'middle';
+        const lab = (t, y, c) => { ctx.fillStyle = c; ctx.fillText(t, x0 + 3, y); };
+        const up = bx.s > 0;
+        lab(`TP1 +1 ATR ${px(bx.tp)}`, yT + (up ? -7 : 7), col('--g'));
+        lab(`SL −1 ATR ${px(bx.sl)}`, yS + (up ? 7 : -7), col('--r'));
+        if (Math.abs(yT - yE) > 22 && (w > 80 || on)) lab(`${bx.s > 0 ? 'Long' : 'Short'} ${bx.open ? 'abierta' : (bx.R >= 0 ? '+' : '') + bx.R.toFixed(2) + 'R'}`, (yE + yT) / 2, col('--tx'));
+      }
+    });
+  };
+  const view = { zOrder: () => 'bottom', renderer: () => ({ draw: target => target.useMediaCoordinateSpace(sc => draw(sc.context)) }) };
+  return { attached(p) { chart = p.chart; series = p.series; this.req = p.requestUpdate; }, paneViews: () => [view], updateAllViews() {}, select(bx) { sel = bx; this.req && this.req(); } };
+}
+function tradeDetail(bx, p) {
+  const tkP = R.paper.taken.find(t => t.p === p && t.t0 === bx.raw.t0), tkB = R.bt.taken.find(t => t.p === p && t.t0 === bx.raw.t0), tk = tkP || tkB, d = Math.round(((bx.open ? Date.now() : bx.raw.t1) - bx.raw.t0) / DAY);
+  const atrPct = bx.atr / bx.e * 100;
+  return `<div class="card det"><div class="row"><b>${pair(p)} · ${bx.s > 0 ? 'Long' : 'Short'}</b><span class="pill ${bx.open ? 'wait' : bx.R >= 0 ? 'win' : 'loss'}">${bx.open ? 'abierta' : (bx.R >= 0 ? '+' : '') + n2(bx.R) + ' R'}</span></div>
+    <div class="grid"><div><span>Entrada</span><span>${fdUTC(bx.raw.t0)}</span></div><div><span>Salida</span><span>${bx.open ? '—' : fdUTC(bx.raw.t1)}</span></div>
+    <div><span>Precio entrada</span><span>${px(bx.e)}</span></div><div><span>ATR 14</span><span>${px(bx.atr)} (${n2(atrPct, 1)}%)</span></div>
+    <div><span>Stop (−1 ATR)</span><span class="r">${px(bx.sl)}</span></div><div><span>TP1 (+1 ATR)</span><span class="g">${px(bx.tp)}</span></div>
+    <div><span>TP1</span><span>${bx.half ? 'alcanzado ✓' : 'no'}</span></div><div><span>Duración</span><span>${d} día${d === 1 ? '' : 's'}</span></div>
+    ${bx.open ? '' : `<div><span>Precio salida</span><span>${px(bx.px)}</span></div><div><span>Motivo</span><span>${bx.raw.why || '—'}</span></div>`}
+    ${tk && !bx.open ? `<div><span>${tkP ? 'Paper' : 'Control 2025+'}</span><span class="${cls(tk.pnl)}">${tk.pnl >= 0 ? '+' : ''}${n2(tk.pnl)} USDT</span></div>` : ''}${!tk && !bx.open && bx.raw.t0 >= Date.parse('2025-01-01') ? '<div><span>Cartera</span><span>no tomada (tope 3)</span></div>' : ''}</div></div>`;
+}
 function renderChart(p) {
   charts.forEach(c => c.remove()); charts = [];
   const P = R.pairs.find(x => x.p === p), cs = getComputedStyle(document.documentElement);
@@ -219,7 +273,7 @@ function renderChart(p) {
     <div id="ch-main" class="chart"></div>
     <div class="legend"><span><i style="background:${col('--b')}"></i>SMA 50</span><span><i style="background:${col('--y')}"></i>HMA 20</span><span><i style="background:${col('--mu')}"></i>SMA 200</span></div>
     <div class="legend"><span><b class="mk" style="color:#af52de">■</b>FOMC / CPI</span><span><b class="mk" style="color:${col('--y')}">●</b>vela shock (&gt;2,5 ATR)</span><span><b class="mk" style="color:${col('--b')}">■</b>día con mucha noticia</span></div>
-    <div id="ch-info" class="chinfo muted">Tocá una vela para ver qué pasó ese día.</div>
+    <div id="ch-info" class="chinfo muted">Tocá una vela para ver qué pasó ese día, o una caja para ver la operación.</div><div id="ch-trade"></div>
     <div class="muted" style="margin-top:8px">Aroon 25</div><div id="ch-aroon" class="chart small"></div>
     <div class="legend"><span><i style="background:${col('--g')}"></i>Aroon arriba</span><span><i style="background:${col('--r')}"></i>Aroon abajo</span></div>
     <div class="grid"><div><span>SMA 50</span><span>${px(s.sma)}</span></div><div><span>SMA 200</span><span>${px(s.s200)}</span></div>
@@ -227,7 +281,7 @@ function renderChart(p) {
     <div><span>ATR 14</span><span>${px(s.atr)}</span></div><div><span>A la SMA 50</span><span>${n2((s.c - s.sma) / s.atr, 1)} ATR</span></div></div>
     ${o ? `<div class="note">Posición abierta desde ${fdUTC(o.t0)}: entrada ${px(o.e)}, stop ${px(o.sl)}${o.half ? ', TP1 hecho' : `, TP1 ${px(o.tp)}`}.</div>` : ''}
     ${daily ? '' : '<div class="note">La estrategia opera con velas diarias: en este marco los indicadores son solo referencia y las flechas marcan las operaciones del diario.</div>'}
-    <div class="note">Flechas: entradas (▲ long, ▼ short) y salidas (●) de la estrategia. Pellizcá o arrastrá para moverte.</div></div>
+    <div class="note">Cajas: verde de la entrada al TP1 (+1 ATR), roja de la entrada al stop (−1 ATR); verde claro y líneas punteadas a +2/+3 ATR cuando siguió de largo. Flechas: entradas (▲ long, ▼ short) y salidas (●). Pellizcá o arrastrá para moverte.</div></div>
     <h2>Noticias de ${coin(p)}</h2><div class="card">${NEWS && NEWS.coins[coin(p)] ? newsList(NEWS.coins[coin(p)].items, 8) : '<div class="muted">Sin noticias para este par.</div>'}${FNG ? `<div style="margin-top:12px">${fngCard()}</div>` : ''}</div>`;
   bindTF(p);
   const opts = h => ({ height: h, layout: { background: { color: 'transparent' }, textColor: col('--mu'), fontSize: 11 }, grid: { vertLines: { visible: false }, horzLines: { color: col('--line') } },
@@ -262,8 +316,15 @@ function renderChart(p) {
   }));
   if (tfMs <= DAY) heavy.forEach(d => { const t = Date.parse(d + 'T00:00:00Z'); if (t >= b[0].t) mk.push({ time: T(t), position: 'aboveBar', shape: 'square', color: col('--b'), size: 0.6, text: 'N' }); });
   mk.sort((a, b) => a.time - b.time); cd.setMarkers(mk);
+  const boxes = P.trades.filter(t => inR(t.t0)).map(t => ({ raw: t, s: t.s, e: t.e, sl: t.sl0, tp: t.tp, px: t.px, R: t.R, half: t.half, run: t.half, atr: Math.abs(t.tp - t.e) / NNFX.CFG.tpAtr, t0: T(t.t0), t1: T(t.t1) }));
+  if (o && inR(o.t0)) boxes.push({ raw: { ...o, t1: b[L].t }, open: true, s: o.s, e: o.e, sl: o.sl0, tp: o.tp, px: b[L].c, R: 0, half: o.half, run: o.half, atr: Math.abs(o.tp - o.e) / NNFX.CFG.tpAtr, t0: T(o.t0), t1: T0(b[L].t) });
+  const prim = posBoxes(boxes, col); cd.attachPrimitive(prim);
   main.subscribeClick(e => {
     if (!e.time || dayIdx[e.time] === undefined) return;
+    const pr = e.point ? cd.coordinateToPrice(e.point.y) : null;
+    const hit = boxes.filter(bx => e.time >= bx.t0 && e.time <= bx.t1).sort((a, c) => (pr === null ? 0 : Math.abs(a.e - pr) - Math.abs(c.e - pr)))[0];
+    prim.select(hit || null);
+    $('#ch-trade').innerHTML = hit ? tradeDetail(hit, p) : '';
     const i = dayIdx[e.time], x = b[i], d = NNFX.day(x.t), bits = [];
     if (daily || tf === '1w') { if (EVENTS.fomc.includes(d)) bits.push('FOMC'); if (EVENTS.cpi.includes(d)) bits.push('CPI'); }
     else { if (EVENTS.fomc.some(z => { const t = nyToUTC(z, 14, 0); return t >= x.t && t < x.t + tfMs; })) bits.push('FOMC'); if (EVENTS.cpi.some(z => { const t = nyToUTC(z, 8, 30); return t >= x.t && t < x.t + tfMs; })) bits.push('CPI'); }
