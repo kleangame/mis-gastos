@@ -1,6 +1,6 @@
 // Motor de la estrategia NNFX diaria (port exacto de backtest/round3.py signals() + round4 masked() + nnfx.py simulate()).
 (function (root) {
-  const CFG = { aroon: 25, sma: 50, hma: 20, sma200: 200, atr: 14, slAtr: 1.0, tpAtr: 1.0, fee: 0.0005, slip: 0.0003, maxAge: 7 };
+  const CFG = { aroon: 25, sma: 50, hma: 20, sma200: 200, atr: 14, slAtr: 1.0, tpAtr: 1.0, fee: 0.0005, slip: 0.0003, maxAge: 7, addOn: true, addLook: 20 };
   const sign = x => (Number.isNaN(x) ? NaN : x > 0 ? 1 : x < 0 ? -1 : 0);
   function sma(a, n) { const o = new Array(a.length).fill(NaN); let s = 0; for (let i = 0; i < a.length; i++) { s += a[i]; if (i >= n) s -= a[i - n]; if (i >= n - 1) o[i] = s / n; } return o; }
   function wma(a, n) { const o = new Array(a.length).fill(NaN), W = n * (n + 1) / 2; for (let i = n - 1; i < a.length; i++) { let s = 0, bad = false; for (let k = 0; k < n; k++) { const v = a[i - n + 1 + k]; if (Number.isNaN(v)) { bad = true; break; } s += v * (k + 1); } o[i] = bad ? NaN : s / W; } return o; }
@@ -47,28 +47,43 @@
   const day = t => new Date(t).toISOString().slice(0, 10);
   // b: velas; la última puede estar en formación (solo se usa su apertura para entrar/salir)
   function simulate(b, I, es, xs, cfg = CFG, fund = null) {
-    const { o, h, l, A } = I, trades = []; let pos = null;
+    const { o, h, l, A, c } = I, trades = []; let pos = null, add = null;
+    const ev = (q, t, k, px, frac) => { const r = frac * q.s * (px - q.e) / q.r; q.R += r; q.ev.push({ t, k, px, frac, R: r }); };
+    const closeAdd = (t, px, why) => { ev(add, t, why, px, add.half ? 0.5 : 1); add.why = why; trades.push(fin(add, t, px)); add = null; };
+    const newHigh = (i, s) => { if (i < cfg.addLook) return false; for (let k = i - cfg.addLook; k < i; k++) if (s > 0 ? c[k] >= c[i] : c[k] <= c[i]) return false; return true; };
     for (let i = 0; i < b.length - 1; i++) {
+      if (add) {
+        const frac = add.half ? 0.5 : 1;
+        if (fund) add.f += -add.s * (fund[i] || 0) * frac * add.e / add.r;
+        const hitSl = add.s > 0 ? l[i] <= add.sl : h[i] >= add.sl, hitTp = !add.half && (add.s > 0 ? h[i] >= add.tp : l[i] <= add.tp);
+        if (hitSl) { add.why = add.half ? 'stop en entrada' : 'stop'; ev(add, b[i].t, add.why, add.sl, frac); trades.push(fin(add, b[i].t, add.sl)); add = null; }
+        else if (hitTp) { ev(add, b[i].t, 'TP1', add.tp, 0.5); add.half = true; add.sl = add.e; add.tpT = b[i].t; }
+      }
       if (pos) {
         const frac = pos.half ? 0.5 : 1;
         if (fund) pos.f += -pos.s * (fund[i] || 0) * frac * pos.e / pos.r;
         const hitSl = pos.s > 0 ? l[i] <= pos.sl : h[i] >= pos.sl;
         const hitTp = !pos.half && (pos.s > 0 ? h[i] >= pos.tp : l[i] <= pos.tp);
-        if (hitSl) { pos.R += frac * pos.s * (pos.sl - pos.e) / pos.r; pos.why = pos.half ? 'stop en entrada' : 'stop'; trades.push(fin(pos, b[i].t, pos.sl)); pos = null; }
+        if (hitSl) { pos.why = pos.half ? 'stop en entrada' : 'stop'; ev(pos, b[i].t, pos.why, pos.sl, frac); trades.push(fin(pos, b[i].t, pos.sl)); if (add) closeAdd(b[i].t, pos.sl, 'cierra con la 1ª (stop)'); pos = null; }
         else {
-          if (hitTp) { pos.R += 0.5 * pos.s * (pos.tp - pos.e) / pos.r; pos.half = true; pos.sl = pos.e; pos.tpT = b[i].t; }
+          if (hitTp) { ev(pos, b[i].t, 'TP1', pos.tp, 0.5); pos.half = true; pos.sl = pos.e; pos.tpT = b[i].t; }
           if (xs[i] === pos.s || es[i] === -pos.s) { pos.exitNext = true; pos.why = es[i] === -pos.s ? 'señal contraria' : (I.c[i] - I.bl[i]) * pos.s < 0 ? 'cruce SMA50' : 'cruce Aroon'; }
         }
       }
-      if (pos && pos.exitNext) { const frac = pos.half ? 0.5 : 1, px = o[i + 1] * (1 - pos.s * cfg.slip); pos.R += frac * pos.s * (px - pos.e) / pos.r; trades.push(fin(pos, b[i + 1].t, px)); pos = null; }
+      if (pos && pos.exitNext) { const frac = pos.half ? 0.5 : 1, px = o[i + 1] * (1 - pos.s * cfg.slip); ev(pos, b[i + 1].t, pos.why, px, frac); trades.push(fin(pos, b[i + 1].t, px)); if (add) closeAdd(b[i + 1].t, px, pos.why); pos = null; }
+      if (pos && cfg.addOn && pos.half && !pos.added && !add && newHigh(i, pos.s)) {
+        const s = pos.s, ent = o[i + 1] * (1 + s * cfg.slip), r = cfg.slAtr * A[i];
+        add = { s, e: ent, r, sl: ent - s * r, sl0: ent - s * r, tp: ent + s * cfg.tpAtr * A[i], half: false, R: 0, f: 0, t0: b[i + 1].t, sig: b[i].t, cost: 2 * cfg.fee * ent / r, add: true, parent: pos.t0, ev: [] };
+        pos.added = true;
+      }
       if (!pos && es[i] !== 0) {
         const s = es[i], ent = o[i + 1] * (1 + s * cfg.slip), r = cfg.slAtr * A[i];
-        pos = { s, e: ent, r, sl: ent - s * r, sl0: ent - s * r, tp: ent + s * cfg.tpAtr * A[i], half: false, R: 0, f: 0, t0: b[i + 1].t, sig: b[i].t, cost: 2 * cfg.fee * ent / r };
+        pos = { s, e: ent, r, sl: ent - s * r, sl0: ent - s * r, tp: ent + s * cfg.tpAtr * A[i], half: false, R: 0, f: 0, t0: b[i + 1].t, sig: b[i].t, cost: 2 * cfg.fee * ent / r, ev: [] };
       }
     }
-    return { trades, open: pos };
+    return { trades, open: pos, openAdd: add };
   }
-  function fin(p, t1, px) { return { t0: p.t0, t1, s: p.s, e: p.e, sl0: p.sl0, tp: p.tp, half: p.half, px, why: p.why, R: p.R - p.cost + p.f }; }
+  function fin(p, t1, px) { return { t0: p.t0, t1, s: p.s, e: p.e, sl0: p.sl0, tp: p.tp, half: p.half, px, why: p.why, R: p.R - p.cost + p.f, fees: p.f - p.cost, ev: p.ev, add: !!p.add, parent: p.parent }; }
   function runPair(b, events, cfg = CFG, fund = null) {
     const I = indicators(b, cfg), { e, x } = signals(I, cfg), es = mask(b, I, e, events);
     const sim = simulate(b, I, es, x, cfg, fund);
@@ -80,7 +95,8 @@
     tr = tr.filter(t => since == null || t.t0 >= since).slice().sort((a, b) => a.t0 - b.t0);
     let eq = start, peak = start, dd = 0; const open = [], taken = [], curve = [];
     const close = upto => { open.sort((a, b) => a.t1 - b.t1); while (open.length && open[0].t1 !== Infinity && open[0].t1 <= upto) { const t = open.shift(); eq += t.pnl; peak = Math.max(peak, eq); dd = Math.max(dd, (peak - eq) / peak); curve.push([t.t1, eq]); } };
-    for (const t0 of tr) { close(t0.t0); if (open.length >= cap) continue; const t = { ...t0, pnl: eq * risk * t0.R, eqAt: eq }; open.push(t); taken.push(t); }
+    const tk = new Set();
+    for (const t0 of tr) { close(t0.t0); if (t0.add && !tk.has(t0.p + '|' + t0.parent)) continue; if (open.length >= cap) continue; tk.add(t0.p + '|' + t0.t0); const t = { ...t0, pnl: eq * risk * t0.R, eqAt: eq }; open.push(t); taken.push(t); }
     close(Infinity);
     return { n: taken.length, final: eq, ret: (eq / start - 1) * 100, maxdd: dd * 100, taken, curve, stillOpen: open };
   }

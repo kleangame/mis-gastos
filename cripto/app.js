@@ -1,5 +1,5 @@
 'use strict';
-const VERSION = '1.4.0';
+const VERSION = '1.5.0';
 if (window.parent !== window) document.body.classList.add('embed');
 const DEF = { pairs: 'BTCUSDT,ETHUSDT,SOLUSDT,DOGEUSDT,BNBUSDT,XRPUSDT,ADAUSDT,AVAXUSDT,LINKUSDT,LTCUSDT,DOTUSDT,TRXUSDT', risk: 2, start: 100, cap: 3, maxLev: 3, paperStart: null };
 const S = Object.assign({}, DEF, JSON.parse(localStorage.getItem('nnfx.settings') || '{}'));
@@ -56,7 +56,9 @@ function compute() {
   const all = [];
   for (const P of R.pairs) {
     P.trades.forEach(t => all.push({ ...t, p: P.p }));
-    if (P.open) { const o = P.open, last = P.b[P.b.length - 1]; all.push({ ...o, p: P.p, open: true, t1: Infinity, R: 0, price: last.c }); }
+    const last = P.b[P.b.length - 1];
+    if (P.open) all.push({ ...P.open, p: P.p, open: true, t1: Infinity, R: 0, price: last.c });
+    if (P.openAdd) all.push({ ...P.openAdd, p: P.p, open: true, t1: Infinity, R: 0, price: last.c });
   }
   const opt = { cap: S.cap, risk: S.risk / 100, start: S.start };
   R.today = Math.max(...R.pairs.map(P => P.b[P.b.length - 1].t));
@@ -114,7 +116,7 @@ function renderHoy() {
   // entradas de hoy
   pp.taken.filter(t => t.t0 === today).forEach(t => {
     const z = sizing(t);
-    acts.push(`<div class="card"><div class="row"><b>Abrir ${coin(t.p)}</b>${side(t.s)}</div>
+    acts.push(`<div class="card"><div class="row"><b>${t.add ? 'Re-compra' : 'Abrir'} ${coin(t.p)}</b>${side(t.s)}</div>${t.add ? `<div class="note" style="margin-top:0">La 1ª ya tocó el TP1 y el precio cerró en ${t.s > 0 ? 'máximo' : 'mínimo'} de 20 días: se suma una 2ª posición con su propio stop y TP1.</div>` : ''}
       <div class="grid"><div><span>Entrada aprox.</span><span>${px(t.e)}</span></div><div><span>ATR 14</span><span>${px(Math.abs(t.tp - t.e))}</span></div>
       <div><span>Stop (−1 ATR)</span><span class="r">${px(t.sl0)}</span></div><div><span>TP1 50% (+1 ATR)</span><span class="g">${px(t.tp)}</span></div>
       <div><span>Stop a</span><span>${n2(z.stopPct, 1)}%</span></div><div><span>TP1 a</span><span>${n2(z.stopPct, 1)}%</span></div>
@@ -127,15 +129,15 @@ function renderHoy() {
     CALC[key(t)] = t;
   });
   // salidas en la apertura de hoy
-  pp.taken.filter(t => !t.open && t.t1 === today).forEach(t => acts.push(`<div class="card"><div class="row"><b>Cerrar ${coin(t.p)}</b>${side(t.s)}</div><div class="note">Motivo: ${t.why}. Cerrá lo que quede a mercado. Resultado aprox. <b class="${cls(t.R)}">${n2(t.R)} R</b>.</div></div>`));
+  pp.taken.filter(t => !t.open && t.t1 === today).forEach(t => acts.push(`<div class="card"><div class="row"><b>Cerrar ${coin(t.p)}${t.add ? ' (re-compra)' : ''}</b>${side(t.s)}</div><div class="note">Motivo: ${t.why}. Cerrá lo que quede a mercado. Resultado aprox. <b class="${cls(t.R)}">${n2(t.R)} R</b>.</div></div>`));
   // stops tocados en la vela de ayer
   pp.taken.filter(t => !t.open && t.t1 === lastClosed && t.why && t.why.startsWith('stop')).forEach(t => acts.push(`<div class="card"><div class="row"><b>${coin(t.p)}: ${t.why}</b>${side(t.s)}</div><div class="note">Se tocó en la vela de ayer. Si tu stop estaba puesto, la posición ya está cerrada (${n2(t.R)} R).</div></div>`));
   // TP1 tocado ayer
-  openPos.filter(t => t.tpT === lastClosed).forEach(t => acts.push(`<div class="card"><div class="row"><b>${coin(t.p)}: TP1 alcanzado</b>${side(t.s)}</div><div class="note">Se cerró la mitad en ${px(t.tp)}. Mové el stop de lo que queda a la entrada: ${px(t.e)}.</div></div>`));
+  openPos.filter(t => t.tpT === lastClosed).forEach(t => acts.push(`<div class="card"><div class="row"><b>${coin(t.p)}${t.add ? ' (re-compra)' : ''}: TP1 alcanzado</b>${side(t.s)}</div><div class="note">Se cerró la mitad en ${px(t.tp)}. Mové el stop de lo que queda a la entrada: ${px(t.e)}.</div></div>`));
   html += `<h2>Qué hacer hoy</h2>` + (acts.length ? acts.join('') : `<div class="card empty">Nada para hacer hoy. La próxima revisión es a las 21:00.</div>`);
   html += `<h2>Posiciones abiertas</h2>` + (openPos.length ? openPos.map(t => {
     const u = unrealR(t);
-    return `<div class="card"><div class="row"><b>${coin(t.p)}</b>${side(t.s)}</div><div class="grid">
+    return `<div class="card"><div class="row"><b>${coin(t.p)}${t.add ? ' · re-compra' : ''}</b>${side(t.s)}</div><div class="grid">
       <div><span>Desde</span><span>${fdUTC(t.t0)}</span></div><div><span>Entrada</span><span>${px(t.e)}</span></div>
       <div><span>Stop actual</span><span class="r">${px(t.sl)}</span></div><div><span>TP1</span><span>${t.half ? 'hecho ✓' : px(t.tp)}</span></div>
       <div><span>Precio</span><span>${px(t.price)}</span></div><div><span>Ahora</span><span class="${cls(u)}">${n2(u)} R</span></div></div></div>`;
@@ -164,7 +166,7 @@ function curveSVG(pf, start) {
 }
 function tradeRows(list) {
   return `<table><tr><th>Par</th><th>Lado</th><th>Entrada</th><th>Salida</th><th>R</th><th>USDT</th></tr>` + list.slice().reverse().map(t =>
-    `<tr><td>${pair(t.p)}${taken[key(t)] ? ' ✓' : ''}</td><td>${t.s > 0 ? 'L' : 'S'}</td><td>${fdUTC(t.t0)}</td><td>${t.open ? 'abierta' : fdUTC(t.t1)}</td><td class="${cls(t.R)}">${t.open ? '—' : n2(t.R)}</td><td class="${cls(t.pnl)}">${t.open ? '—' : n2(t.pnl)}</td></tr>`).join('') + `</table>`;
+    `<tr><td>${pair(t.p)}${t.add ? ' <span class="muted">+</span>' : ''}${taken[key(t)] ? ' ✓' : ''}</td><td>${t.s > 0 ? 'L' : 'S'}</td><td>${fdUTC(t.t0)}</td><td>${t.open ? 'abierta' : fdUTC(t.t1)}</td><td class="${cls(t.R)}">${t.open ? '—' : n2(t.R)}</td><td class="${cls(t.pnl)}">${t.open ? '—' : n2(t.pnl)}</td></tr>`).join('') + `</table>`;
 }
 function renderPaper() {
   const pp = R.paper, closed = pp.taken.filter(t => !t.open), st = NNFX.stats(closed), bt = R.bt, bs = R.btStats;
@@ -233,23 +235,34 @@ function posBoxes(boxes, col) {
         const up = bx.s > 0;
         lab(`TP1 +1 ATR ${px(bx.tp)}`, yT + (up ? -7 : 7), col('--g'));
         lab(`SL −1 ATR ${px(bx.sl)}`, yS + (up ? 7 : -7), col('--r'));
-        if (Math.abs(yT - yE) > 22 && (w > 80 || on)) lab(`${bx.s > 0 ? 'Long' : 'Short'} ${bx.open ? 'abierta' : (bx.R >= 0 ? '+' : '') + bx.R.toFixed(2) + 'R'}`, (yE + yT) / 2, col('--tx'));
+        if (Math.abs(yT - yE) > 22 && (w > 80 || on)) lab(`${bx.add ? 'Re-compra' : bx.s > 0 ? 'Long' : 'Short'} ${bx.open ? 'abierta' : (bx.R >= 0 ? '+' : '') + bx.R.toFixed(2) + 'R'}`, (yE + yT) / 2, col('--tx'));
       }
     });
   };
   const view = { zOrder: () => 'bottom', renderer: () => ({ draw: target => target.useMediaCoordinateSpace(sc => draw(sc.context)) }) };
   return { attached(p) { chart = p.chart; series = p.series; this.req = p.requestUpdate; }, paneViews: () => [view], updateAllViews() {}, select(bx) { sel = bx; this.req && this.req(); } };
 }
-function tradeDetail(bx, p) {
-  const tkP = R.paper.taken.find(t => t.p === p && t.t0 === bx.raw.t0), tkB = R.bt.taken.find(t => t.p === p && t.t0 === bx.raw.t0), tk = tkP || tkB, d = Math.round(((bx.open ? Date.now() : bx.raw.t1) - bx.raw.t0) / DAY);
-  const atrPct = bx.atr / bx.e * 100;
-  return `<div class="card det"><div class="row"><b>${pair(p)} · ${bx.s > 0 ? 'Long' : 'Short'}</b><span class="pill ${bx.open ? 'wait' : bx.R >= 0 ? 'win' : 'loss'}">${bx.open ? 'abierta' : (bx.R >= 0 ? '+' : '') + n2(bx.R) + ' R'}</span></div>
-    <div class="grid"><div><span>Entrada</span><span>${fdUTC(bx.raw.t0)}</span></div><div><span>Salida</span><span>${bx.open ? '—' : fdUTC(bx.raw.t1)}</span></div>
-    <div><span>Precio entrada</span><span>${px(bx.e)}</span></div><div><span>ATR 14</span><span>${px(bx.atr)} (${n2(atrPct, 1)}%)</span></div>
-    <div><span>Stop (−1 ATR)</span><span class="r">${px(bx.sl)}</span></div><div><span>TP1 (+1 ATR)</span><span class="g">${px(bx.tp)}</span></div>
-    <div><span>TP1</span><span>${bx.half ? 'alcanzado ✓' : 'no'}</span></div><div><span>Duración</span><span>${d} día${d === 1 ? '' : 's'}</span></div>
-    ${bx.open ? '' : `<div><span>Precio salida</span><span>${px(bx.px)}</span></div><div><span>Motivo</span><span>${bx.raw.why || '—'}</span></div>`}
-    ${tk && !bx.open ? `<div><span>${tkP ? 'Paper' : 'Control 2025+'}</span><span class="${cls(tk.pnl)}">${tk.pnl >= 0 ? '+' : ''}${n2(tk.pnl)} USDT</span></div>` : ''}${!tk && !bx.open && bx.raw.t0 >= Date.parse('2025-01-01') ? '<div><span>Cartera</span><span>no tomada (tope 3)</span></div>' : ''}</div></div>`;
+function tradeDetail(bx0, p, boxes) {
+  const main = bx0.add ? boxes.find(x => !x.add && x.raw.t0 === bx0.raw.parent) || bx0 : bx0, adds = boxes.filter(x => x.add && x.raw.parent === main.raw.t0);
+  const port = t => R.paper.taken.find(x => x.p === p && x.t0 === t.t0) || R.bt.taken.find(x => x.p === p && x.t0 === t.t0);
+  const fdt = t => fdUTC(t), lsd = (b2) => b2.s > 0 ? 'Long' : 'Short';
+  const rows = [], usd = (q, r) => { const tk = port(q.raw); return tk ? `${r * tk.eqAt * S.risk / 100 >= 0 ? '+' : ''}${n2(r * tk.eqAt * S.risk / 100)}` : ''; };
+  const whyTxt = k => ({ TP1: 'TP1: cierra la mitad (+1 ATR)', stop: 'Stop (−1 ATR): cierra todo', 'stop en entrada': 'Stop en la entrada: cierra el resto', 'señal contraria': 'Señal contraria: cierra el resto', 'cruce SMA50': 'Cierre bajo/sobre la SMA50: cierra el resto', 'cruce Aroon': 'Giro del Aroon: cierra el resto', 'cierra con la 1ª (stop)': 'Cierra junto con la 1ª' }[k] || k);
+  const push = (q, tag) => {
+    rows.push({ t: q.raw.t0, html: `<td>${fdt(q.raw.t0)}</td><td><b>${tag} ${lsd(q)}</b>${q.add && !port(q.raw) && port(main.raw) ? ' <span class="muted">(no entró a la cartera: tope de 3)</span>' : ''}<div class="muted">ATR ${px(q.atr)} · SL ${px(q.sl)} · TP1 ${px(q.tp)}</div></td><td>${px(q.e)}</td><td></td><td></td>` });
+    (q.raw.ev || []).forEach(e => rows.push({ t: e.t + (e.k === 'TP1' ? 0 : 1), html: `<td>${fdt(e.t)}</td><td>${tag === 'Re-compra' ? 'Re-compra · ' : ''}${whyTxt(e.k)}${e.frac < 1 && e.k !== 'TP1' ? ' (50%)' : ''}</td><td>${px(e.px)}</td><td class="${cls(e.R)}">${n2(e.R)}</td><td class="${cls(e.R)}">${usd(q, e.R)}</td>` }));
+    if (!q.open && Math.abs(q.raw.fees || 0) > 0.005) rows.push({ t: q.raw.t1 + 2, html: `<td></td><td class="muted">${tag === 'Re-compra' ? 'Re-compra · ' : ''}comisiones y funding</td><td></td><td class="${cls(q.raw.fees)}">${n2(q.raw.fees)}</td><td class="${cls(q.raw.fees)}">${usd(q, q.raw.fees)}</td>` });
+    if (q.open) rows.push({ t: Infinity, html: `<td>hoy</td><td class="muted">${tag === 'Re-compra' ? 'Re-compra ' : ''}abierta${q.half ? ', stop en la entrada' : ''}</td><td>${px(q.px)}</td><td></td><td></td>` });
+  };
+  push(main, 'Apertura'); adds.forEach(a2 => push(a2, 'Re-compra'));
+  rows.sort((x, y) => x.t - y.t);
+  const all = [main, ...adds], tot = all.reduce((a2, q) => a2 + (q.open ? 0 : q.R), 0), tus = all.map(q => { const tk = port(q.raw); return tk && !q.open ? tk.pnl : null; }).filter(v => v !== null);
+  const anyOpen = all.some(q => q.open), d = Math.round(((anyOpen ? Date.now() : Math.max(...all.map(q => q.raw.t1))) - main.raw.t0) / DAY);
+  const tk0 = port(main.raw), src = tk0 ? (R.paper.taken.includes(tk0) ? 'paper' : 'control 2025+') : (main.raw.t0 >= Date.parse('2025-01-01') ? 'no tomada (tope 3)' : 'antes de 2025');
+  return `<div class="card det"><div class="row"><b>${pair(p)} · ${lsd(main)}${adds.length ? ' + re-compra' : ''}</b><span class="pill ${anyOpen ? 'wait' : tot >= 0 ? 'win' : 'loss'}">${anyOpen ? 'abierta' : (tot >= 0 ? '+' : '') + n2(tot) + ' R'}</span></div>
+    <table class="tl"><tr><th>Fecha</th><th>Movimiento</th><th>Precio</th><th>R</th><th>USDT</th></tr>${rows.map(r2 => `<tr>${r2.html}</tr>`).join('')}</table>
+    <div class="grid"><div><span>Duración</span><span>${d} día${d === 1 ? '' : 's'}</span></div><div><span>Resultado</span><span class="${cls(tot)}">${anyOpen ? 'en curso' : (tus.length ? `${tus.reduce((a2, v) => a2 + v, 0) >= 0 ? '+' : ''}${n2(tus.reduce((a2, v) => a2 + v, 0))} USDT` : n2(tot) + ' R')}</span></div>
+    <div><span>Cartera</span><span>${src}</span></div><div><span>Riesgo</span><span>1 R = ${S.risk}% del saldo</span></div></div></div>`;
 }
 function renderChart(p) {
   charts.forEach(c => c.remove()); charts = [];
@@ -297,7 +310,7 @@ function renderChart(p) {
   const line = (arr, color, w = 2) => { const sr = main.addLineSeries({ color, lineWidth: w, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }); sr.setData(b.map((x, i) => ({ time: T0(x.t), value: arr[i] })).filter(d => !isNaN(d.value))); };
   line(I.bl, col('--b')); line(I.hm, col('--y'), 1.5); line(I.s200, col('--mu'), 1.5);
   const mk = [];
-  P.trades.filter(t => inR(t.t0)).forEach(t => { mk.push({ time: T(t.t0), position: t.s > 0 ? 'belowBar' : 'aboveBar', shape: t.s > 0 ? 'arrowUp' : 'arrowDown', color: t.s > 0 ? col('--g') : col('--r') });
+  P.trades.filter(t => inR(t.t0)).forEach(t => { mk.push({ time: T(t.t0), position: t.s > 0 ? 'belowBar' : 'aboveBar', shape: t.s > 0 ? 'arrowUp' : 'arrowDown', color: t.s > 0 ? col('--g') : col('--r'), text: t.add ? '+' : '' });
     mk.push({ time: T(t.t1), position: t.s > 0 ? 'aboveBar' : 'belowBar', shape: 'circle', color: t.R > 0 ? col('--g') : col('--r'), text: (t.R > 0 ? '+' : '') + t.R.toFixed(1) + 'R' }); });
   if (o) {
     if (inR(o.t0)) mk.push({ time: T(o.t0), position: o.s > 0 ? 'belowBar' : 'aboveBar', shape: o.s > 0 ? 'arrowUp' : 'arrowDown', color: o.s > 0 ? col('--g') : col('--r'), text: 'abierta' });
@@ -316,7 +329,9 @@ function renderChart(p) {
   }));
   if (tfMs <= DAY) heavy.forEach(d => { const t = Date.parse(d + 'T00:00:00Z'); if (t >= b[0].t) mk.push({ time: T(t), position: 'aboveBar', shape: 'square', color: col('--b'), size: 0.6, text: 'N' }); });
   mk.sort((a, b) => a.time - b.time); cd.setMarkers(mk);
-  const boxes = P.trades.filter(t => inR(t.t0)).map(t => ({ raw: t, s: t.s, e: t.e, sl: t.sl0, tp: t.tp, px: t.px, R: t.R, half: t.half, run: t.half, atr: Math.abs(t.tp - t.e) / NNFX.CFG.tpAtr, t0: T(t.t0), t1: T(t.t1) }));
+  const boxes = P.trades.filter(t => inR(t.t0)).map(t => ({ raw: t, add: t.add, s: t.s, e: t.e, sl: t.sl0, tp: t.tp, px: t.px, R: t.R, half: t.half, run: t.half, atr: Math.abs(t.tp - t.e) / NNFX.CFG.tpAtr, t0: T(t.t0), t1: T(t.t1) }));
+  const oa = P.openAdd; if (oa && inR(oa.t0)) { mk.push({ time: T(oa.t0), position: oa.s > 0 ? 'belowBar' : 'aboveBar', shape: oa.s > 0 ? 'arrowUp' : 'arrowDown', color: oa.s > 0 ? col('--g') : col('--r'), text: '+' }); boxes.push({ raw: { ...oa, t1: b[L].t }, open: true, add: true, s: oa.s, e: oa.e, sl: oa.sl0, tp: oa.tp, px: b[L].c, R: 0, half: oa.half, run: oa.half, atr: Math.abs(oa.tp - oa.e) / NNFX.CFG.tpAtr, t0: T(oa.t0), t1: T0(b[L].t) }); }
+  mk.sort((a, b) => a.time - b.time); cd.setMarkers(mk);
   if (o && inR(o.t0)) boxes.push({ raw: { ...o, t1: b[L].t }, open: true, s: o.s, e: o.e, sl: o.sl0, tp: o.tp, px: b[L].c, R: 0, half: o.half, run: o.half, atr: Math.abs(o.tp - o.e) / NNFX.CFG.tpAtr, t0: T(o.t0), t1: T0(b[L].t) });
   const prim = posBoxes(boxes, col); cd.attachPrimitive(prim);
   main.subscribeClick(e => {
@@ -324,7 +339,7 @@ function renderChart(p) {
     const pr = e.point ? cd.coordinateToPrice(e.point.y) : null;
     const hit = boxes.filter(bx => e.time >= bx.t0 && e.time <= bx.t1).sort((a, c) => (pr === null ? 0 : Math.abs(a.e - pr) - Math.abs(c.e - pr)))[0];
     prim.select(hit || null);
-    $('#ch-trade').innerHTML = hit ? tradeDetail(hit, p) : '';
+    $('#ch-trade').innerHTML = hit ? tradeDetail(hit, p, boxes) : '';
     const i = dayIdx[e.time], x = b[i], d = NNFX.day(x.t), bits = [];
     if (daily || tf === '1w') { if (EVENTS.fomc.includes(d)) bits.push('FOMC'); if (EVENTS.cpi.includes(d)) bits.push('CPI'); }
     else { if (EVENTS.fomc.some(z => { const t = nyToUTC(z, 14, 0); return t >= x.t && t < x.t + tfMs; })) bits.push('FOMC'); if (EVENTS.cpi.some(z => { const t = nyToUTC(z, 8, 30); return t >= x.t && t < x.t + tfMs; })) bits.push('CPI'); }

@@ -34,3 +34,4 @@ svg{display:block;width:100%}.note{font-size:12.5px;color:var(--mu);margin-top:8
 .seg{display:flex;background:var(--fill);border-radius:9px;padding:2px;margin:10px 0 0}.seg button{flex:1;background:none;border:0;color:var(--tx);padding:6px 0;font-size:13px;font-weight:500;border-radius:7px}.seg button.on{background:var(--card);box-shadow:0 1px 3px rgba(0,0,0,.15)}
 .det{margin-top:10px;box-shadow:0 0 0 1.5px var(--b) inset}.pill.win{background:rgba(52,199,89,.18);color:var(--g)}.pill.loss{background:rgba(255,59,48,.15);color:var(--r)}
 .calc{margin-top:12px;padding-top:10px;border-top:1px solid var(--line)}.calc label{font-size:13px;color:var(--mu)}.calc input{width:100%;margin-top:4px}
+.tl{margin:8px 0 4px;font-size:12px}.tl td,.tl th{vertical-align:top;padding:6px 3px}.tl .muted{font-size:11px}
