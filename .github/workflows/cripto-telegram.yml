@@ -1,0 +1,50 @@
+name: Bot Telegram cripto
+# Avisa las señales del día después del cierre diario (00:00 UTC = 21:00 UY).
+# 00:40 es respaldo por si GitHub atrasa o se saltea el de 00:10; el estado evita mensajes repetidos.
+on:
+  schedule:
+    - cron: '10 0 * * *'
+    - cron: '40 0 * * *'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Reenviar aunque ya se haya mandado hoy'
+        type: boolean
+        default: false
+permissions:
+  contents: write
+concurrency: cripto-telegram
+jobs:
+  telegram:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - uses: actions/cache@v4
+        with:
+          path: .cache/vision
+          key: vision-${{ github.run_id }}
+          restore-keys: vision-
+      - name: Calcular señales y avisar
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          PAPER_START: ${{ vars.CRIPTO_PAPER_START || '2026-10-17' }}
+          START: ${{ vars.CRIPTO_START || '100' }}
+          RISK: ${{ vars.CRIPTO_RISK || '2' }}
+          BUDGET: ${{ vars.CRIPTO_BUDGET || '4' }}
+          LEV: ${{ vars.CRIPTO_LEV || '3' }}
+          FORCE: ${{ inputs.force && '1' || '' }}
+        run: |
+          git fetch origin cripto-bot:cripto-bot 2>/dev/null && git show cripto-bot:bot-state.json > /tmp/bot-state.json || true
+          node cripto/tools/telegram.mjs /tmp/bot-state.json
+      - name: Guardar estado en la rama cripto-bot
+        if: always()
+        run: |
+          [ -f /tmp/bot-state.json ] || exit 0
+          mkdir /tmp/pub && cd /tmp/pub && cp /tmp/bot-state.json .
+          git init -q -b cripto-bot && git add bot-state.json
+          git -c user.name=github-actions -c user.email=actions@github.com commit -qm "bot $(date -u +%FT%H:%MZ)"
+          git push -qf "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" cripto-bot
