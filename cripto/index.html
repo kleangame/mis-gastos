@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<script>try{var t=(window.parent!==window?parent.document.documentElement.dataset.theme:null)||localStorage.getItem('mg-theme');if(t==='dark'||t==='light')document.documentElement.dataset.theme=t}catch(e){}</script>
+<title>Cripto · Mis Gastos</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <div class="top"><h1>Cripto</h1><button id="refresh" class="icon" aria-label="Actualizar">⟳</button></div>
+  <div id="sub" class="muted">Cargando…</div>
+  <nav>
+    <button data-tab="hoy" class="active">Hoy</button>
+    <button data-tab="paper">Paper</button>
+    <button data-tab="pares">Pares</button>
+    <button data-tab="ajustes">Ajustes</button>
+  </nav>
+</header>
+<main>
+  <section id="tab-hoy" class="tab active"></section>
+  <section id="tab-paper" class="tab"></section>
+  <section id="tab-pares" class="tab"></section>
+  <section id="tab-ajustes" class="tab"></section>
+</main>
+<script src="events.js"></script>
+<script src="engine.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

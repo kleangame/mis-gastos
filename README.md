@@ -49,3 +49,7 @@ npm i playwright && npx playwright install chromium
 python3 -m http.server 8123 &
 node tests/e2e.mjs            # o URL=https://kleangame.github.io/mis-gastos/ node tests/e2e.mjs
 ```
+
+## Cripto (v8.11.0)
+
+Pestaña «Cripto»: señales diarias long/short para futuros USDT-M de Binance con paper trading (carpeta `cripto/`, código y backtest en el proyecto Estrategias Cripto NNFX). Solo simula; no se conecta a Binance.

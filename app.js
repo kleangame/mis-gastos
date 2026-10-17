@@ -28,7 +28,7 @@ const CARD_COLORS = [
 const CURRENCIES = ['UYU', 'USD', 'ARS', 'EUR', 'BRL', 'CLP', 'MXN', 'COP', 'PEN'];
 const MONTHS = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
 const CASH = 'cash';           // id de la cuenta Efectivo (también usado por datos de versiones anteriores)
-const APP_VERSION = '8.10.0';
+const APP_VERSION = '8.11.0';
 const ACC_TYPES = {
   cash:    { label: 'Efectivo',  emoji: '💵', color: '#34C759' },
   bank:    { label: 'Banco',     emoji: '🏦', color: '#007AFF' },
@@ -940,7 +940,13 @@ function renderSettings() {
   `;
 }
 
-const VIEWS = { home: renderHome, list: renderList, cards: renderCards, budgets: renderBudgets, settings: renderSettings };
+const VIEWS = { home: renderHome, list: renderList, cards: renderCards, budgets: renderBudgets, crypto: renderCrypto, settings: renderSettings };
+// Señales cripto (paper trading de futuros de Binance): app aparte en cripto/, cargada una sola vez.
+function renderCrypto() {
+  const v = document.getElementById('view-crypto');
+  if (!v.querySelector('iframe')) v.innerHTML = '<iframe src="cripto/" title="Cripto" class="crypto-frame"></iframe>';
+  else { try { v.querySelector('iframe').contentDocument.documentElement.dataset.theme = document.documentElement.dataset.theme || ''; } catch (e) {} }
+}
 function render() { VIEWS[S.view](); }
 function show(view) {
   S.view = view;
