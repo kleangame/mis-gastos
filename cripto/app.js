@@ -1,7 +1,7 @@
 'use strict';
-const VERSION = '1.5.0';
+const VERSION = '1.6.0';
 if (window.parent !== window) document.body.classList.add('embed');
-const DEF = { pairs: 'BTCUSDT,ETHUSDT,SOLUSDT,DOGEUSDT,BNBUSDT,XRPUSDT,ADAUSDT,AVAXUSDT,LINKUSDT,LTCUSDT,DOTUSDT,TRXUSDT', risk: 2, start: 100, cap: 3, maxLev: 3, paperStart: null };
+const DEF = { pairs: 'BTCUSDT,ETHUSDT,SOLUSDT,DOGEUSDT,BNBUSDT,XRPUSDT,ADAUSDT,AVAXUSDT,LINKUSDT,LTCUSDT,DOTUSDT,TRXUSDT', risk: 2, start: 100, budget: 4, maxLev: 3, paperStart: null };
 const S = Object.assign({}, DEF, JSON.parse(localStorage.getItem('nnfx.settings') || '{}'));
 const DAY = 864e5, MMR = 0.005;
 if (!S.paperStart) { S.paperStart = Math.floor(Date.now() / DAY) * DAY; save(); }
@@ -60,7 +60,7 @@ function compute() {
     if (P.open) all.push({ ...P.open, p: P.p, open: true, t1: Infinity, R: 0, price: last.c });
     if (P.openAdd) all.push({ ...P.openAdd, p: P.p, open: true, t1: Infinity, R: 0, price: last.c });
   }
-  const opt = { cap: S.cap, risk: S.risk / 100, start: S.start };
+  const opt = { risk: S.risk / 100, budget: (S.budget || 4) / 100, lev: S.maxLev, start: S.start };
   R.today = Math.max(...R.pairs.map(P => P.b[P.b.length - 1].t));
   R.paper = NNFX.portfolio(all, { ...opt, since: S.paperStart });
   R.bt = NNFX.portfolio(all, { ...opt, since: Date.parse('2025-01-01') });
@@ -69,9 +69,9 @@ function compute() {
 
 function sizing(t) {
   const risk$ = t.eqAt * S.risk / 100, dist = Math.abs(t.e - t.sl0), qty = risk$ / dist, notional = qty * t.e;
-  let lev = 1; while (lev < S.maxLev && notional / lev > t.eqAt / S.cap) lev++;
+  const usedN = t.usedN || 0; let lev = 1; while (lev < S.maxLev && (usedN + notional) / lev > t.eqAt) lev++;
   const margin = notional / lev, liq = lev === 1 && t.s > 0 ? null : t.s > 0 ? t.e * (1 - 1 / lev + MMR) : t.e * (1 + 1 / lev - MMR);
-  return { risk$, qty, notional, lev, margin, liq, stopPct: dist / t.e * 100, tooBig: margin > t.eqAt / S.cap * 1.001 };
+  return { risk$, qty, notional, lev, margin, liq, stopPct: dist / t.e * 100, tooBig: (usedN + notional) / lev > t.eqAt * 1.001 };
 }
 
 function render() { renderHoy(); renderPaper(); renderPares(); renderAjustes(); }
@@ -103,16 +103,24 @@ function heavyNewsDays(k) {
   return out;
 }
 const CALC = {};
+function riskBar(openPos, eq) {
+  const B = S.budget || 4, items = openPos.map(t => ({ t, r: t.half ? 0 : t.amt / eq * 100 })), used = items.reduce((a, x) => a + x.r, 0);
+  const segs = items.filter(x => x.r > 0).map(x => `<span style="width:${Math.min(100, x.r / B * 100)}%;background:${x.t.s > 0 ? 'var(--g)' : 'var(--r)'}"></span>`).join('');
+  const list = items.map(x => `${coin(x.t.p)}${x.t.add ? ' +' : ''} ${x.r ? n2(x.r, 1) + '%' : 'libre de riesgo'}`).join(' · ');
+  return `<div class="rbar-h"><span class="muted">Riesgo abierto</span><b>${n2(used, 1)} de ${B}%</b></div><div class="rbar">${segs}</div>${list ? `<div class="muted" style="font-size:12px">${list}</div>` : ''}`;
+}
 function renderHoy() {
   const today = R.today, lastClosed = today - DAY, srcs = [...new Set(R.pairs.map(P => P.src))].join(' + ');
   const pp = R.paper, openPos = pp.stillOpen.filter(t => t.open), unreal = openPos.reduce((a, t) => a + t.eqAt * S.risk / 100 * unrealR(t), 0);
   const next = today + DAY, h = Math.max(0, (next - Date.now()) / 36e5);
   $('#sub').textContent = `Próximo cierre diario 21:00 UY (en ${Math.floor(h)} h ${Math.round((h % 1) * 60)} min) · ${srcs}`;
   let html = `<div class="card"><div class="row"><div><div class="muted">Saldo paper (cerrado)</div><div class="big">${n2(pp.final)} <span class="muted">USDT</span></div></div>
-    <div style="text-align:right"><div class="muted">Abierto</div><div class="${cls(unreal)}">${unreal >= 0 ? '+' : ''}${n2(unreal)} USDT</div><div class="muted">${openPos.length}/${S.cap} posiciones</div></div></div></div>`;
+    <div style="text-align:right"><div class="muted">Abierto</div><div class="${cls(unreal)}">${unreal >= 0 ? '+' : ''}${n2(unreal)} USDT</div><div class="muted">${openPos.length} posici${openPos.length === 1 ? 'ón' : 'ones'}</div></div></div>${riskBar(openPos, pp.final)}</div>`;
   const evToday = EV.has(NNFX.day(today));
   if (evToday) html += `<div class="card"><span class="pill warn">FOMC / CPI hoy</span> No se abren posiciones nuevas en la vela de hoy.</div>`;
   const acts = [];
+  // señales de hoy que no entran
+  pp.skipped.filter(t => t.t0 === today).forEach(t => acts.push(`<div class="card"><div class="row"><b>${t.add ? 'Re-compra' : 'Señal'} ${coin(t.p)}: no entra</b>${side(t.s)}</div><div class="note">${t.why === 'sin margen' ? 'El nocional total pasaría ' + S.maxLev + '× tu saldo.' : `Cupo de riesgo lleno (${n2(t.usedR, 1)} de ${S.budget || 4}% en uso).`} Se anota en Paper para ver cómo le iba. Si una posición toca el TP1 se libera cupo.</div></div>`));
   // entradas de hoy
   pp.taken.filter(t => t.t0 === today).forEach(t => {
     const z = sizing(t);
@@ -168,6 +176,11 @@ function tradeRows(list) {
   return `<table><tr><th>Par</th><th>Lado</th><th>Entrada</th><th>Salida</th><th>R</th><th>USDT</th></tr>` + list.slice().reverse().map(t =>
     `<tr><td>${pair(t.p)}${t.add ? ' <span class="muted">+</span>' : ''}${taken[key(t)] ? ' ✓' : ''}</td><td>${t.s > 0 ? 'L' : 'S'}</td><td>${fdUTC(t.t0)}</td><td>${t.open ? 'abierta' : fdUTC(t.t1)}</td><td class="${cls(t.R)}">${t.open ? '—' : n2(t.R)}</td><td class="${cls(t.pnl)}">${t.open ? '—' : n2(t.pnl)}</td></tr>`).join('') + `</table>`;
 }
+function skipRows(list) {
+  if (!list.length) return '';
+  return `<details class="card"><summary>Señales que no entraron (${list.length})</summary><table class="skip"><tr><th>Par</th><th>Lado</th><th>Entrada</th><th>Motivo</th><th>R</th></tr>` + list.slice().reverse().map(t =>
+    `<tr><td>${pair(t.p)}${t.add ? ' +' : ''}</td><td>${t.s > 0 ? 'L' : 'S'}</td><td>${fdUTC(t.t0)}</td><td>${t.why === 'sin margen' ? 'margen' : 'cupo lleno'}</td><td>${t.open ? '—' : n2(t.R)}</td></tr>`).join('') + `</table></details>`;
+}
 function renderPaper() {
   const pp = R.paper, closed = pp.taken.filter(t => !t.open), st = NNFX.stats(closed), bt = R.bt, bs = R.btStats;
   let html = `<h2>Paper trading desde ${fdUTC(S.paperStart)}</h2><div class="card"><div class="row"><div class="big">${n2(pp.final)} USDT</div><div class="${cls(pp.ret)}">${pp.ret >= 0 ? '+' : ''}${n2(pp.ret, 1)}%</div></div>
@@ -176,10 +189,11 @@ function renderPaper() {
     <div><span>Peor caída</span><span>${n2(pp.maxdd, 1)}%</span></div><div><span>Abiertas</span><span>${pp.stillOpen.length}</span></div></div>
     ${st.n < 30 ? '<div class="note">Con menos de 30 operaciones el resultado todavía es ruido. Hacen falta varios meses.</div>' : ''}</div>`;
   html += pp.taken.length ? `<div class="card">${tradeRows(pp.taken)}</div>` : `<div class="card empty">Todavía no hubo señales desde que empezó el paper trading.</div>`;
+  html += skipRows(pp.skipped);
   html += `<h2>Control: misma app desde 01/01/2025</h2><div class="card"><div class="row"><div class="big">${n2(bt.final)} USDT</div><div class="${cls(bt.ret)}">${bt.ret >= 0 ? '+' : ''}${n2(bt.ret, 1)}%</div></div>${curveSVG(bt, S.start)}
     <div class="grid"><div><span>Operaciones</span><span>${bs.n}</span></div><div><span>Ganadoras</span><span>${n2(bs.win, 0)}%</span></div><div><span>Promedio</span><span>${n2(bs.expR)} R</span></div><div><span>Peor caída</span><span>${n2(bt.maxdd, 1)}%</span></div></div>
     <div class="note">Sirve para comprobar que la app calcula igual que el backtest (allí: 100 → 181,5 USDT, caída 10,1%). No es una prueba nueva: estos datos ya se usaron para elegir la estrategia.</div></div>
-    <details class="card"><summary>Operaciones del control</summary>${tradeRows(bt.taken)}</details>`;
+    <details class="card"><summary>Operaciones del control</summary>${tradeRows(bt.taken)}</details>${skipRows(bt.skipped)}`;
   $('#tab-paper').innerHTML = html;
 }
 function renderPares() {
@@ -249,7 +263,7 @@ function tradeDetail(bx0, p, boxes) {
   const rows = [], usd = (q, r) => { const tk = port(q.raw); return tk ? `${r * tk.eqAt * S.risk / 100 >= 0 ? '+' : ''}${n2(r * tk.eqAt * S.risk / 100)}` : ''; };
   const whyTxt = k => ({ TP1: 'TP1: cierra la mitad (+1 ATR)', stop: 'Stop (−1 ATR): cierra todo', 'stop en entrada': 'Stop en la entrada: cierra el resto', 'señal contraria': 'Señal contraria: cierra el resto', 'cruce SMA50': 'Cierre bajo/sobre la SMA50: cierra el resto', 'cruce Aroon': 'Giro del Aroon: cierra el resto', 'cierra con la 1ª (stop)': 'Cierra junto con la 1ª' }[k] || k);
   const push = (q, tag) => {
-    rows.push({ t: q.raw.t0, html: `<td>${fdt(q.raw.t0)}</td><td><b>${tag} ${lsd(q)}</b>${q.add && !port(q.raw) && port(main.raw) ? ' <span class="muted">(no entró a la cartera: tope de 3)</span>' : ''}<div class="muted">ATR ${px(q.atr)} · SL ${px(q.sl)} · TP1 ${px(q.tp)}</div></td><td>${px(q.e)}</td><td></td><td></td>` });
+    rows.push({ t: q.raw.t0, html: `<td>${fdt(q.raw.t0)}</td><td><b>${tag} ${lsd(q)}</b>${q.add && !port(q.raw) && port(main.raw) ? ' <span class="muted">(no entró a la cartera: cupo de riesgo lleno)</span>' : ''}<div class="muted">ATR ${px(q.atr)} · SL ${px(q.sl)} · TP1 ${px(q.tp)}</div></td><td>${px(q.e)}</td><td></td><td></td>` });
     (q.raw.ev || []).forEach(e => rows.push({ t: e.t + (e.k === 'TP1' ? 0 : 1), html: `<td>${fdt(e.t)}</td><td>${tag === 'Re-compra' ? 'Re-compra · ' : ''}${whyTxt(e.k)}${e.frac < 1 && e.k !== 'TP1' ? ' (50%)' : ''}</td><td>${px(e.px)}</td><td class="${cls(e.R)}">${n2(e.R)}</td><td class="${cls(e.R)}">${usd(q, e.R)}</td>` }));
     if (!q.open && Math.abs(q.raw.fees || 0) > 0.005) rows.push({ t: q.raw.t1 + 2, html: `<td></td><td class="muted">${tag === 'Re-compra' ? 'Re-compra · ' : ''}comisiones y funding</td><td></td><td class="${cls(q.raw.fees)}">${n2(q.raw.fees)}</td><td class="${cls(q.raw.fees)}">${usd(q, q.raw.fees)}</td>` });
     if (q.open) rows.push({ t: Infinity, html: `<td>hoy</td><td class="muted">${tag === 'Re-compra' ? 'Re-compra ' : ''}abierta${q.half ? ', stop en la entrada' : ''}</td><td>${px(q.px)}</td><td></td><td></td>` });
@@ -258,7 +272,7 @@ function tradeDetail(bx0, p, boxes) {
   rows.sort((x, y) => x.t - y.t);
   const all = [main, ...adds], tot = all.reduce((a2, q) => a2 + (q.open ? 0 : q.R), 0), tus = all.map(q => { const tk = port(q.raw); return tk && !q.open ? tk.pnl : null; }).filter(v => v !== null);
   const anyOpen = all.some(q => q.open), d = Math.round(((anyOpen ? Date.now() : Math.max(...all.map(q => q.raw.t1))) - main.raw.t0) / DAY);
-  const tk0 = port(main.raw), src = tk0 ? (R.paper.taken.includes(tk0) ? 'paper' : 'control 2025+') : (main.raw.t0 >= Date.parse('2025-01-01') ? 'no tomada (tope 3)' : 'antes de 2025');
+  const tk0 = port(main.raw), src = tk0 ? (R.paper.taken.includes(tk0) ? 'paper' : 'control 2025+') : (main.raw.t0 >= Date.parse('2025-01-01') ? 'no entró (cupo de riesgo)' : 'antes de 2025');
   return `<div class="card det"><div class="row"><b>${pair(p)} · ${lsd(main)}${adds.length ? ' + re-compra' : ''}</b><span class="pill ${anyOpen ? 'wait' : tot >= 0 ? 'win' : 'loss'}">${anyOpen ? 'abierta' : (tot >= 0 ? '+' : '') + n2(tot) + ' R'}</span></div>
     <table class="tl"><tr><th>Fecha</th><th>Movimiento</th><th>Precio</th><th>R</th><th>USDT</th></tr>${rows.map(r2 => `<tr>${r2.html}</tr>`).join('')}</table>
     <div class="grid"><div><span>Duración</span><span>${d} día${d === 1 ? '' : 's'}</span></div><div><span>Resultado</span><span class="${cls(tot)}">${anyOpen ? 'en curso' : (tus.length ? `${tus.reduce((a2, v) => a2 + v, 0) >= 0 ? '+' : ''}${n2(tus.reduce((a2, v) => a2 + v, 0))} USDT` : n2(tot) + ' R')}</span></div>
@@ -369,7 +383,8 @@ function renderAjustes() {
   $('#tab-ajustes').innerHTML = `<h2>Cuenta paper</h2><div class="card">
     <label>Saldo inicial (USDT)</label><input id="s-start" type="number" min="10" step="1" value="${S.start}">
     <label>Riesgo por operación</label><select id="s-risk">${[1, 2, 3].map(v => `<option value="${v}" ${S.risk == v ? 'selected' : ''}>${v}%</option>`).join('')}</select>
-    <label>Máximo de posiciones abiertas</label><select id="s-cap">${[2, 3, 4, 5].map(v => `<option ${S.cap == v ? 'selected' : ''}>${v}</option>`).join('')}</select>
+    <label>Riesgo abierto máximo (suma de stops, %)</label><select id="s-cap">${[2, 3, 4, 6, 8].map(v => `<option value="${v}" ${(S.budget || 4) == v ? 'selected' : ''}>${v}%</option>`).join('')}</select>
+    <div class="note">Sin tope de posiciones. Una posición con el stop en la entrada no cuenta. Además, el nocional total no pasa de ${S.maxLev}× el saldo para que alcance el margen.</div>
     <label>Apalancamiento máximo</label><select id="s-lev">${[1, 2, 3].map(v => `<option value="${v}" ${S.maxLev == v ? 'selected' : ''}>${v}x</option>`).join('')}</select>
     <label>Inicio del paper trading</label><input id="s-paper" type="date" value="${new Date(S.paperStart).toISOString().slice(0, 10)}">
     <label>Pares (separados por coma)</label><textarea id="s-pairs" rows="3">${S.pairs}</textarea>
@@ -377,7 +392,7 @@ function renderAjustes() {
     <h2>Estrategia</h2><div class="card note" style="margin-top:0">Velas diarias (cierre 21:00 UY). Señal Aroon 25, línea base SMA 50, confirmación pendiente de HMA 20, solo a favor de la SMA 200 del par, precio a ≤1 ATR de la SMA 50, regla de 7 velas, una vela de gracia y continuación. Stop 1 × ATR 14, TP1 1 × ATR con la mitad y stop a la entrada; el resto sale con Aroon en contra o cierre del otro lado de la SMA 50. Sin entradas en días de FOMC o CPI. Costos simulados: 0,05% comisión + 0,03% deslizamiento por lado, funding real cuando está disponible.</div>
     <div class="card note">Solo simula: no se conecta a tu cuenta de Binance ni ejecuta órdenes. Señales v${VERSION}.</div>`;
   $('#s-save').onclick = () => {
-    S.start = +$('#s-start').value || 100; S.risk = +$('#s-risk').value; S.cap = +$('#s-cap').value; S.maxLev = +$('#s-lev').value;
+    S.start = +$('#s-start').value || 100; S.risk = +$('#s-risk').value; S.budget = +$('#s-cap').value; S.maxLev = +$('#s-lev').value;
     S.paperStart = Date.parse($('#s-paper').value) || S.paperStart; const np = $('#s-pairs').value.replace(/\s/g, '').toUpperCase();
     const reload = np !== S.pairs; S.pairs = np; save(); if (reload) load(); else { compute(); render(); }
   };

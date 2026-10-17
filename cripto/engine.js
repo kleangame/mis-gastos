@@ -91,14 +91,27 @@
     return { I, es, x, ...sim, last, state: { c: I.c[last], sma: I.bl[last], s200: I.s200[last], aroon: I.s1[last], hma: I.s2[last], atr: I.A[last] } };
   }
   // cartera: tope de posiciones, riesgo % compuesto
-  function portfolio(tr, { cap = 3, risk = 0.02, start = 100, since = null } = {}) {
+  // cartera: cupo de riesgo abierto (posiciones con stop en entrada no cuentan), nocional total <= lev x saldo, riesgo % compuesto
+  function portfolio(tr, { cap = Infinity, risk = 0.02, budget = 0.04, lev = 3, start = 100, since = null } = {}) {
     tr = tr.filter(t => since == null || t.t0 >= since).slice().sort((a, b) => a.t0 - b.t0);
-    let eq = start, peak = start, dd = 0; const open = [], taken = [], curve = [];
+    let eq = start, peak = start, dd = 0; const open = [], taken = [], skipped = [], curve = [];
     const close = upto => { open.sort((a, b) => a.t1 - b.t1); while (open.length && open[0].t1 !== Infinity && open[0].t1 <= upto) { const t = open.shift(); eq += t.pnl; peak = Math.max(peak, eq); dd = Math.max(dd, (peak - eq) / peak); curve.push([t.t1, eq]); } };
+    const tp1 = t => { const e = (t.ev || []).find(x => x.k === 'TP1'); return e ? e.t : null; };
+    const free = (o, at) => o.tpT != null && o.tpT < at;
     const tk = new Set();
-    for (const t0 of tr) { close(t0.t0); if (t0.add && !tk.has(t0.p + '|' + t0.parent)) continue; if (open.length >= cap) continue; tk.add(t0.p + '|' + t0.t0); const t = { ...t0, pnl: eq * risk * t0.R, eqAt: eq }; open.push(t); taken.push(t); }
+    for (const t0 of tr) {
+      close(t0.t0); if (t0.add && !tk.has(t0.p + '|' + t0.parent)) continue;
+      const usedR = open.reduce((a, o) => a + (free(o, t0.t0) ? 0 : o.amt), 0), usedN = open.reduce((a, o) => a + o.not * (free(o, t0.t0) ? 0.5 : 1), 0);
+      const amt = eq * risk, not = amt / (Math.abs(t0.e - t0.sl0) / t0.e);
+      let why = null;
+      if (open.length >= cap) why = 'tope de posiciones';
+      else if (usedR + amt > eq * budget * 1.000001) why = 'cupo de riesgo lleno';
+      else if (usedN + not > eq * lev) why = 'sin margen';
+      if (why) { skipped.push({ ...t0, why, usedR: usedR / eq * 100 }); continue; }
+      tk.add(t0.p + '|' + t0.t0); const t = { ...t0, tpT: tp1(t0), amt, not, usedN, pnl: amt * t0.R, eqAt: eq }; open.push(t); taken.push(t);
+    }
     close(Infinity);
-    return { n: taken.length, final: eq, ret: (eq / start - 1) * 100, maxdd: dd * 100, taken, curve, stillOpen: open };
+    return { n: taken.length, final: eq, ret: (eq / start - 1) * 100, maxdd: dd * 100, taken, skipped, curve, stillOpen: open };
   }
   function stats(tr) { const r = tr.map(t => t.R); if (!r.length) return { n: 0, win: 0, expR: 0, pf: 0, totR: 0 }; const gp = r.filter(x => x > 0).reduce((a, b) => a + b, 0), gl = -r.filter(x => x < 0).reduce((a, b) => a + b, 0); return { n: r.length, win: 100 * r.filter(x => x > 0).length / r.length, expR: r.reduce((a, b) => a + b, 0) / r.length, pf: gl ? gp / gl : 99, totR: r.reduce((a, b) => a + b, 0) }; }
   const api = { CFG, indicators, signals, mask, simulate, runPair, portfolio, stats, day };
