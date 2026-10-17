@@ -31,3 +31,4 @@ svg{display:block;width:100%}.note{font-size:12.5px;color:var(--mu);margin-top:8
 .news a{display:flex;flex-direction:column;gap:2px;padding:9px 0;border-top:1px solid var(--line);color:inherit;text-decoration:none}.news a:first-child{border-top:0}.news .muted{font-size:12px}
 .fng{position:relative;height:6px;border-radius:3px;margin-top:8px;background:linear-gradient(90deg,var(--r),var(--y),var(--g))}.fng i{position:absolute;top:-4px;width:4px;height:14px;border-radius:2px;background:var(--tx,#000);transform:translateX(-2px)}
 .chinfo{margin-top:10px;font-size:13px;line-height:1.4}.mk{margin-right:4px;font-size:11px}
+.seg{display:flex;background:var(--fill);border-radius:9px;padding:2px;margin:10px 0 0}.seg button{flex:1;background:none;border:0;color:var(--tx);padding:6px 0;font-size:13px;font-weight:500;border-radius:7px}.seg button.on{background:var(--card);box-shadow:0 1px 3px rgba(0,0,0,.15)}

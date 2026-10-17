@@ -1,5 +1,5 @@
 'use strict';
-const VERSION = '1.2.0';
+const VERSION = '1.3.0';
 if (window.parent !== window) document.body.classList.add('embed');
 const DEF = { pairs: 'BTCUSDT,ETHUSDT,SOLUSDT,DOGEUSDT,BNBUSDT,XRPUSDT,ADAUSDT,AVAXUSDT,LINKUSDT,LTCUSDT,DOTUSDT,TRXUSDT', risk: 2, start: 100, cap: 3, maxLev: 3, paperStart: null };
 const S = Object.assign({}, DEF, JSON.parse(localStorage.getItem('nnfx.settings') || '{}'));
@@ -20,13 +20,14 @@ const side = s => s > 0 ? '<span class="pill long">LONG</span>' : '<span class="
 const cls = v => v > 0 ? 'g' : v < 0 ? 'r' : '';
 const coin = p => p.replace(/USDT$/, '');
 const pair = p => p.replace(/USDT$/, '/USDT');
-let chartPair = null, charts = [];
+let chartPair = null, charts = [], chartTF = localStorage.getItem('nnfx.tf') || '1d';
+const TFS = [['15m', '15 min', 9e5], ['1h', '1 h', 36e5], ['4h', '4 h', 144e5], ['1d', '1 día', 864e5], ['1w', '1 sem', 6048e5]], tfCache = {};
 
 async function getJSON(u) { const r = await fetch(u, { cache: 'no-store' }); if (!r.ok) throw new Error(r.status); return r.json(); }
-async function klines(p) {
-  const srcs = [['Futuros', `https://fapi.binance.com/fapi/v1/klines?symbol=${p}&interval=1d&limit=1000`], ['Spot', `https://data-api.binance.vision/api/v3/klines?symbol=${p}&interval=1d&limit=1000`]];
+async function klines(p, tf = '1d') {
+  const srcs = [['Futuros', `https://fapi.binance.com/fapi/v1/klines?symbol=${p}&interval=${tf}&limit=1000`], ['Spot', `https://data-api.binance.vision/api/v3/klines?symbol=${p}&interval=${tf}&limit=1000`]];
   for (const [name, u] of srcs) {
-    try { const k = await getJSON(u); if (Array.isArray(k) && k.length > 210) return { src: name, b: k.map(x => ({ t: x[0], o: +x[1], h: +x[2], l: +x[3], c: +x[4], ct: x[6] })) }; } catch (e) { }
+    try { const k = await getJSON(u); if (Array.isArray(k) && k.length > (tf === '1w' ? 60 : 210)) return { src: name, b: k.map(x => ({ t: x[0], o: +x[1], h: +x[2], l: +x[3], c: +x[4], ct: x[6] })) }; } catch (e) { }
   }
   throw new Error('sin datos para ' + p);
 }
@@ -191,13 +192,29 @@ function aroonUD(h, l, n) {
   }
   return { up, dn };
 }
+function nyToUTC(d, h, m) { // hora de Nueva York -> ms UTC
+  let g = Date.parse(d + 'T00:00:00Z') + (h + 4) * 36e5 + m * 6e4;
+  const nyH = +new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', hour: 'numeric', hourCycle: 'h23' }).format(g);
+  return g + (h - nyH) * 36e5;
+}
 function renderChart(p) {
   charts.forEach(c => c.remove()); charts = [];
-  const P = R.pairs.find(x => x.p === p), I = P.I, b = P.b, s = P.state, cs = getComputedStyle(document.documentElement);
+  const P = R.pairs.find(x => x.p === p), cs = getComputedStyle(document.documentElement);
+  const tf = chartTF, tfMs = TFS.find(x => x[0] === tf)[2], daily = tf === '1d', intra = tfMs < DAY;
+  let b = P.b, I = P.I;
+  if (!daily) {
+    const ck = p + tf, c = tfCache[ck];
+    if (!c || Date.now() - c.at > 3e5) {
+      if (!c || !c.loading) { tfCache[ck] = { loading: true, at: 0 }; klines(p, tf).then(r => { tfCache[ck] = { at: Date.now(), b: r.b, I: NNFX.indicators(r.b) }; }).catch(e => { tfCache[ck] = { at: Date.now(), err: e.message }; }).finally(() => { if (chartPair === p && chartTF === tf) renderChart(p); }); }
+      if (!c || !c.b) { $('#tab-pares').innerHTML = `<div class="row" style="margin-top:12px"><button class="back" id="ch-back">‹ Pares</button></div>${tfBar()}<div class="card muted">${c && c.err ? 'No pude bajar velas de ' + tf + '.' : 'Bajando velas de ' + TFS.find(x => x[0] === tf)[1] + '…'}</div>`; bindTF(p); return; }
+    }
+    b = tfCache[ck].b; I = tfCache[ck].I;
+  }
+  const L = b.length - 1, s = { c: I.c[L], sma: I.bl[L], s200: I.s200[L], aroon: I.s1[L], hma: I.s2[L], atr: I.A[L] };
   const col = k => cs.getPropertyValue(k).trim();
   const o = P.open, last = b[b.length - 1];
   const dir = v => v > 0 ? '<span class="g">▲ sube</span>' : v < 0 ? '<span class="r">▼ baja</span>' : '·';
-  $('#tab-pares').innerHTML = `<div class="row" style="margin-top:12px"><button class="back" id="ch-back">‹ Pares</button><span class="muted">velas diarias</span></div>
+  $('#tab-pares').innerHTML = `<div class="row" style="margin-top:12px"><button class="back" id="ch-back">‹ Pares</button></div>${tfBar()}
     <div class="card"><div class="row"><div><b style="font-size:20px">${pair(p)}</b><div class="muted">${px(last.c)} USDT</div></div><div>${o ? side(o.s) : '<span class="pill wait">sin posición</span>'}</div></div>
     <div id="ch-main" class="chart"></div>
     <div class="legend"><span><i style="background:${col('--b')}"></i>SMA 50</span><span><i style="background:${col('--y')}"></i>HMA 20</span><span><i style="background:${col('--mu')}"></i>SMA 200</span></div>
@@ -209,55 +226,67 @@ function renderChart(p) {
     <div><span>Aroon</span><span>${dir(s.aroon)}</span></div><div><span>HMA 20</span><span>${dir(s.hma)}</span></div>
     <div><span>ATR 14</span><span>${px(s.atr)}</span></div><div><span>A la SMA 50</span><span>${n2((s.c - s.sma) / s.atr, 1)} ATR</span></div></div>
     ${o ? `<div class="note">Posición abierta desde ${fdUTC(o.t0)}: entrada ${px(o.e)}, stop ${px(o.sl)}${o.half ? ', TP1 hecho' : `, TP1 ${px(o.tp)}`}.</div>` : ''}
+    ${daily ? '' : '<div class="note">La estrategia opera con velas diarias: en este marco los indicadores son solo referencia y las flechas marcan las operaciones del diario.</div>'}
     <div class="note">Flechas: entradas (▲ long, ▼ short) y salidas (●) de la estrategia. Pellizcá o arrastrá para moverte.</div></div>
     <h2>Noticias de ${coin(p)}</h2><div class="card">${NEWS && NEWS.coins[coin(p)] ? newsList(NEWS.coins[coin(p)].items, 8) : '<div class="muted">Sin noticias para este par.</div>'}${FNG ? `<div style="margin-top:12px">${fngCard()}</div>` : ''}</div>`;
-  $('#ch-back').onclick = () => { chartPair = null; charts.forEach(c => c.remove()); charts = []; renderPares(); };
+  bindTF(p);
   const opts = h => ({ height: h, layout: { background: { color: 'transparent' }, textColor: col('--mu'), fontSize: 11 }, grid: { vertLines: { visible: false }, horzLines: { color: col('--line') } },
-    rightPriceScale: { borderVisible: false }, timeScale: { borderVisible: false }, crosshair: { mode: 0 }, handleScale: { axisPressedMouseMove: false } });
-  const T = t => Math.floor(t / 1000);
+    rightPriceScale: { borderVisible: false }, timeScale: { borderVisible: false, timeVisible: intra, secondsVisible: false }, crosshair: { mode: 0 }, handleScale: { axisPressedMouseMove: false } });
+  const T0 = t => Math.floor(t / 1000) - (intra ? 10800 : 0); // intradía en hora de Uruguay
+  const at = t => { if (t < b[0].t) return null; let lo = 0, hi = L; while (lo < hi) { const m = (lo + hi + 1) >> 1; if (b[m].t <= t) hi = hi, lo = m; else hi = m - 1; } return lo; };
+  const T = t => T0(b[at(t) ?? 0].t), inR = t => t >= b[0].t;
   const main = LightweightCharts.createChart($('#ch-main'), { ...opts(320), width: $('#ch-main').clientWidth || innerWidth - 60 });
   const ar = LightweightCharts.createChart($('#ch-aroon'), { ...opts(110), width: $('#ch-aroon').clientWidth || innerWidth - 60, timeScale: { visible: false } });
   charts = [main, ar];
   const cd = main.addCandlestickSeries({ upColor: col('--g'), downColor: col('--r'), wickUpColor: col('--g'), wickDownColor: col('--r'), borderVisible: false });
-  cd.setData(b.map(x => ({ time: T(x.t), open: x.o, high: x.h, low: x.l, close: x.c })));
-  const line = (arr, color, w = 2) => { const sr = main.addLineSeries({ color, lineWidth: w, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }); sr.setData(b.map((x, i) => ({ time: T(x.t), value: arr[i] })).filter(d => !isNaN(d.value))); };
+  cd.setData(b.map(x => ({ time: T0(x.t), open: x.o, high: x.h, low: x.l, close: x.c })));
+  const line = (arr, color, w = 2) => { const sr = main.addLineSeries({ color, lineWidth: w, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }); sr.setData(b.map((x, i) => ({ time: T0(x.t), value: arr[i] })).filter(d => !isNaN(d.value))); };
   line(I.bl, col('--b')); line(I.hm, col('--y'), 1.5); line(I.s200, col('--mu'), 1.5);
   const mk = [];
-  P.trades.forEach(t => { mk.push({ time: T(t.t0), position: t.s > 0 ? 'belowBar' : 'aboveBar', shape: t.s > 0 ? 'arrowUp' : 'arrowDown', color: t.s > 0 ? col('--g') : col('--r') });
+  P.trades.filter(t => inR(t.t0)).forEach(t => { mk.push({ time: T(t.t0), position: t.s > 0 ? 'belowBar' : 'aboveBar', shape: t.s > 0 ? 'arrowUp' : 'arrowDown', color: t.s > 0 ? col('--g') : col('--r') });
     mk.push({ time: T(t.t1), position: t.s > 0 ? 'aboveBar' : 'belowBar', shape: 'circle', color: t.R > 0 ? col('--g') : col('--r'), text: (t.R > 0 ? '+' : '') + t.R.toFixed(1) + 'R' }); });
   if (o) {
-    mk.push({ time: T(o.t0), position: o.s > 0 ? 'belowBar' : 'aboveBar', shape: o.s > 0 ? 'arrowUp' : 'arrowDown', color: o.s > 0 ? col('--g') : col('--r'), text: 'abierta' });
+    if (inR(o.t0)) mk.push({ time: T(o.t0), position: o.s > 0 ? 'belowBar' : 'aboveBar', shape: o.s > 0 ? 'arrowUp' : 'arrowDown', color: o.s > 0 ? col('--g') : col('--r'), text: 'abierta' });
     cd.createPriceLine({ price: o.e, color: col('--mu'), lineWidth: 1, lineStyle: 2, title: 'entrada' });
     cd.createPriceLine({ price: o.sl, color: col('--r'), lineWidth: 1, lineStyle: 2, title: 'stop' });
     if (!o.half) cd.createPriceLine({ price: o.tp, color: col('--g'), lineWidth: 1, lineStyle: 2, title: 'TP1' });
   }
   const k = coin(p), heavy = heavyNewsDays(k), cnt = newsCount(k), shock = new Set(), dayIdx = {};
   b.forEach((x, i) => {
-    const d = NNFX.day(x.t); dayIdx[T(x.t)] = i;
-    const fo = EVENTS.fomc.includes(d), cp = EVENTS.cpi.includes(d);
-    if (fo || cp) mk.push({ time: T(x.t), position: 'aboveBar', shape: 'square', color: '#af52de', size: 0.6, text: fo ? 'FOMC' : 'CPI' });
-    if (i > 14 && (x.h - x.l) > 2.5 * I.A[i - 1]) { shock.add(i); mk.push({ time: T(x.t), position: 'belowBar', shape: 'circle', color: col('--y'), size: 0.8 }); }
-    if (heavy.has(d)) mk.push({ time: T(x.t), position: 'aboveBar', shape: 'square', color: col('--b'), size: 0.6, text: 'N' });
+    dayIdx[T0(x.t)] = i;
+    if (i > 14 && (x.h - x.l) > 2.5 * I.A[i - 1]) { shock.add(i); mk.push({ time: T0(x.t), position: 'belowBar', shape: 'circle', color: col('--y'), size: 0.8 }); }
   });
+  if (tf !== '1w') [['fomc', 'FOMC', 14, 0], ['cpi', 'CPI', 8, 30]].forEach(([k2, lab, h, m]) => EVENTS[k2].forEach(d => {
+    const t = intra ? nyToUTC(d, h, m) : Date.parse(d + 'T00:00:00Z');
+    if (t >= b[0].t && t <= b[L].t + tfMs) mk.push({ time: T(t), position: 'aboveBar', shape: 'square', color: '#af52de', size: 0.6, text: lab });
+  }));
+  if (tfMs <= DAY) heavy.forEach(d => { const t = Date.parse(d + 'T00:00:00Z'); if (t >= b[0].t) mk.push({ time: T(t), position: 'aboveBar', shape: 'square', color: col('--b'), size: 0.6, text: 'N' }); });
   mk.sort((a, b) => a.time - b.time); cd.setMarkers(mk);
   main.subscribeClick(e => {
     if (!e.time || dayIdx[e.time] === undefined) return;
     const i = dayIdx[e.time], x = b[i], d = NNFX.day(x.t), bits = [];
-    if (EVENTS.fomc.includes(d)) bits.push('FOMC'); if (EVENTS.cpi.includes(d)) bits.push('CPI');
+    if (daily || tf === '1w') { if (EVENTS.fomc.includes(d)) bits.push('FOMC'); if (EVENTS.cpi.includes(d)) bits.push('CPI'); }
+    else { if (EVENTS.fomc.some(z => { const t = nyToUTC(z, 14, 0); return t >= x.t && t < x.t + tfMs; })) bits.push('FOMC'); if (EVENTS.cpi.some(z => { const t = nyToUTC(z, 8, 30); return t >= x.t && t < x.t + tfMs; })) bits.push('CPI'); }
     if (i > 0) bits.push(`${x.c >= b[i - 1].c ? '+' : ''}${n2((x.c / b[i - 1].c - 1) * 100, 1)}%`);
     if (i > 14) bits.push(`rango ${n2((x.h - x.l) / I.A[i - 1], 1)} ATR${shock.has(i) ? ' ⚡' : ''}`);
-    if (cnt[d]) bits.push(`${cnt[d]} noticias`);
-    const its = NEWS && NEWS.coins[k] ? NEWS.coins[k].items.filter(n => NNFX.day(n.ts) === d) : [];
-    $('#ch-info').innerHTML = `<b>${fdUTC(x.t)}</b> · ${bits.join(' · ')}${its.length ? newsList(its, 4) : ''}`;
+    if (daily && cnt[d]) bits.push(`${cnt[d]} noticias`);
+    const its = NEWS && NEWS.coins[k] ? NEWS.coins[k].items.filter(n => daily ? NNFX.day(n.ts) === d : n.ts >= x.t && n.ts < x.t + tfMs) : [];
+    const lab = intra ? new Date(x.t).toLocaleString('es-UY', { timeZone: 'America/Montevideo', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : (tf === '1w' ? 'semana del ' : '') + fdUTC(x.t);
+    $('#ch-info').innerHTML = `<b>${lab}</b> · ${bits.join(' · ')}${its.length ? newsList(its, 4) : ''}`;
   });
   const A = aroonUD(I.h, I.l, NNFX.CFG.aroon);
-  const al = (arr, color) => { const sr = ar.addLineSeries({ color, lineWidth: 1.5, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }); sr.setData(b.map((x, i) => ({ time: T(x.t), value: arr[i] })).filter(d => !isNaN(d.value))); };
+  const al = (arr, color) => { const sr = ar.addLineSeries({ color, lineWidth: 1.5, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }); sr.setData(b.map((x, i) => ({ time: T0(x.t), value: arr[i] })).filter(d => !isNaN(d.value))); };
   al(A.up, col('--g')); al(A.dn, col('--r'));
-  const from = T(b[Math.max(0, b.length - 180)].t), to = T(last.t) + 86400 * 3;
+  const from = T0(b[Math.max(0, b.length - 180)].t), to = T0(b[L].t) + tfMs / 1000 * 3;
   main.timeScale().setVisibleRange({ from, to }); ar.timeScale().setVisibleRange({ from, to });
   let sync = false;
   main.timeScale().subscribeVisibleLogicalRangeChange(r => { if (sync || !r) return; sync = true; ar.timeScale().setVisibleLogicalRange(r); sync = false; });
   ar.timeScale().subscribeVisibleLogicalRangeChange(r => { if (sync || !r) return; sync = true; main.timeScale().setVisibleLogicalRange(r); sync = false; });
+}
+function tfBar() { return `<div class="seg tf">${TFS.map(([k, l]) => `<button data-tf="${k}" class="${k === chartTF ? 'on' : ''}">${l}</button>`).join('')}</div>`; }
+function bindTF(p) {
+  $('#ch-back').onclick = () => { chartPair = null; charts.forEach(c => c.remove()); charts = []; renderPares(); };
+  document.querySelectorAll('[data-tf]').forEach(bt => bt.onclick = () => { chartTF = bt.dataset.tf; localStorage.setItem('nnfx.tf', chartTF); renderChart(p); });
 }
 addEventListener('resize', () => { if (chartPair && charts.length) { charts[0].applyOptions({ width: $('#ch-main').clientWidth || innerWidth - 60 }); charts[1].applyOptions({ width: $('#ch-aroon').clientWidth }); } });
 function renderAjustes() {
