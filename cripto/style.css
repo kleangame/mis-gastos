@@ -37,3 +37,4 @@ svg{display:block;width:100%}.note{font-size:12.5px;color:var(--mu);margin-top:8
 .tl{margin:8px 0 4px;font-size:12px}.tl td,.tl th{vertical-align:top;padding:6px 3px}.tl .muted{font-size:11px}
 .rbar-h{display:flex;justify-content:space-between;margin-top:10px;font-size:13px}.rbar{display:flex;height:8px;border-radius:4px;background:var(--line,#e5e5ea);overflow:hidden;margin:4px 0 4px}.rbar span{display:block;height:100%;border-right:1px solid var(--card,#fff)}
 .skip td{color:var(--muted,#8e8e93)}
+.grid.ohlc{gap:3px 14px;margin-top:6px}.grid.ohlc div{font-size:13px}

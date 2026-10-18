@@ -1,5 +1,5 @@
 // Cachea la app para que abra sin conexión.
-const CACHE = 'gastos-v8-17-1';
+const CACHE = 'gastos-v8-17-2';
 const FILES = ['./', 'index.html', 'styles.css', 'app.js', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png', 'jsqr.js', 'cripto/', 'cripto/index.html', 'cripto/style.css', 'cripto/app.js', 'cripto/engine.js', 'cripto/events.js', 'cripto/lwc.js'];
 
 self.addEventListener('install', (e) => { e.waitUntil(caches.open(CACHE).then((c) => c.addAll(FILES.map((f) => new Request(f, { cache: 'reload' }))))); self.skipWaiting(); });

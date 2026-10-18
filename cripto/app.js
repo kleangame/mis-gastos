@@ -1,5 +1,5 @@
 'use strict';
-const VERSION = '1.6.1';
+const VERSION = '1.6.2';
 if (window.parent !== window) document.body.classList.add('embed');
 const DEF = { pairs: 'BTCUSDT,ETHUSDT,SOLUSDT,DOGEUSDT,BNBUSDT,XRPUSDT,ADAUSDT,AVAXUSDT,LINKUSDT,LTCUSDT,DOTUSDT,TRXUSDT', risk: 2, start: 100, budget: 4, maxLev: 3, paperStart: null };
 const S = Object.assign({}, DEF, JSON.parse(localStorage.getItem('nnfx.settings') || '{}'));
@@ -312,7 +312,7 @@ function renderChart(p) {
     <h2>Noticias de ${coin(p)}</h2><div class="card">${NEWS && NEWS.coins[coin(p)] ? newsList(NEWS.coins[coin(p)].items, 8) : '<div class="muted">Sin noticias para este par.</div>'}${FNG ? `<div style="margin-top:12px">${fngCard()}</div>` : ''}</div>`;
   bindTF(p);
   const opts = h => ({ height: h, layout: { background: { color: 'transparent' }, textColor: col('--mu'), fontSize: 11 }, grid: { vertLines: { visible: false }, horzLines: { color: col('--line') } },
-    rightPriceScale: { borderVisible: false, minimumWidth: 64 }, timeScale: { borderVisible: false, timeVisible: intra, secondsVisible: false }, crosshair: { mode: 0 }, handleScale: { axisPressedMouseMove: false } });
+    rightPriceScale: { borderVisible: false, minimumWidth: 72 }, timeScale: { borderVisible: false, timeVisible: intra, secondsVisible: false }, crosshair: { mode: 0 }, handleScale: { axisPressedMouseMove: false } });
   const T0 = t => Math.floor(t / 1000) - (intra ? 10800 : 0); // intradía en hora de Uruguay
   const at = t => { if (t < b[0].t) return null; let lo = 0, hi = L; while (lo < hi) { const m = (lo + hi + 1) >> 1; if (b[m].t <= t) hi = hi, lo = m; else hi = m - 1; } return lo; };
   const T = t => T0(b[at(t) ?? 0].t), inR = t => t >= b[0].t;
@@ -320,8 +320,11 @@ function renderChart(p) {
   const ar = LightweightCharts.createChart($('#ch-aroon'), { ...opts(110), width: $('#ch-aroon').clientWidth || innerWidth - 60, timeScale: { visible: false } });
   charts = [main, ar];
   const cd = main.addCandlestickSeries({ upColor: col('--g'), downColor: col('--r'), wickUpColor: col('--g'), wickDownColor: col('--r'), borderVisible: false });
+  // ~5 cifras significativas: DOGE 0,077490, BTC 104.512,30
+  const prec = Math.min(8, Math.max(2, 4 - Math.floor(Math.log10(Math.abs(b[L].c) || 1)))), pf = { type: 'price', precision: prec, minMove: +(10 ** -prec).toFixed(prec) };
+  cd.applyOptions({ priceFormat: pf });
   cd.setData(b.map(x => ({ time: T0(x.t), open: x.o, high: x.h, low: x.l, close: x.c })));
-  const line = (arr, color, w = 2) => { const sr = main.addLineSeries({ color, lineWidth: w, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }); sr.setData(b.map((x, i) => ({ time: T0(x.t), value: arr[i] })).filter(d => !isNaN(d.value))); };
+  const line = (arr, color, w = 2) => { const sr = main.addLineSeries({ color, lineWidth: w, priceLineVisible: false, lastValueVisible: true, crosshairMarkerVisible: false, priceFormat: pf }); sr.setData(b.map((x, i) => ({ time: T0(x.t), value: arr[i] })).filter(d => !isNaN(d.value))); };
   line(I.bl, col('--b')); line(I.hm, col('--y'), 1.5); line(I.s200, col('--mu'), 1.5);
   const mk = [];
   P.trades.filter(t => inR(t.t0)).forEach(t => { mk.push({ time: T(t.t0), position: t.s > 0 ? 'belowBar' : 'aboveBar', shape: t.s > 0 ? 'arrowUp' : 'arrowDown', color: t.s > 0 ? col('--g') : col('--r'), text: t.add ? '+' : '' });
@@ -354,25 +357,35 @@ function renderChart(p) {
     const hit = boxes.filter(bx => e.time >= bx.t0 && e.time <= bx.t1).sort((a, c) => (pr === null ? 0 : Math.abs(a.e - pr) - Math.abs(c.e - pr)))[0];
     prim.select(hit || null);
     $('#ch-trade').innerHTML = hit ? tradeDetail(hit, p, boxes) : '';
-    const i = dayIdx[e.time], x = b[i], d = NNFX.day(x.t), bits = [];
+    showDay(dayIdx[e.time], true);
+  };
+  // datos de la vela marcada: fecha, eventos, OHLC e indicadores (se actualiza al tocar o arrastrar la cruz)
+  let shownI = null;
+  const showDay = (i, news) => {
+    if (i === undefined || (i === shownI && !news)) return; shownI = i;
+    const x = b[i], d = NNFX.day(x.t), bits = [];
     if (daily || tf === '1w') { if (EVENTS.fomc.includes(d)) bits.push('FOMC'); if (EVENTS.cpi.includes(d)) bits.push('CPI'); }
     else { if (EVENTS.fomc.some(z => { const t = nyToUTC(z, 14, 0); return t >= x.t && t < x.t + tfMs; })) bits.push('FOMC'); if (EVENTS.cpi.some(z => { const t = nyToUTC(z, 8, 30); return t >= x.t && t < x.t + tfMs; })) bits.push('CPI'); }
     if (i > 0) bits.push(`${x.c >= b[i - 1].c ? '+' : ''}${n2((x.c / b[i - 1].c - 1) * 100, 1)}%`);
     if (i > 14) bits.push(`rango ${n2((x.h - x.l) / I.A[i - 1], 1)} ATR${shock.has(i) ? ' ⚡' : ''}`);
     if (daily && cnt[d]) bits.push(`${cnt[d]} noticias`);
-    const its = NEWS && NEWS.coins[k] ? NEWS.coins[k].items.filter(n => daily ? NNFX.day(n.ts) === d : n.ts >= x.t && n.ts < x.t + tfMs) : [];
+    const its = news && NEWS && NEWS.coins[k] ? NEWS.coins[k].items.filter(n => daily ? NNFX.day(n.ts) === d : n.ts >= x.t && n.ts < x.t + tfMs) : [];
     const lab = intra ? new Date(x.t).toLocaleString('es-UY', { timeZone: 'America/Montevideo', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : (tf === '1w' ? 'semana del ' : '') + fdUTC(x.t);
-    $('#ch-info').innerHTML = `<b>${lab}</b> · ${bits.join(' · ')}${its.length ? newsList(its, 4) : ''}`;
+    const cell = (l, v, c) => `<div><span>${l}</span><span${c ? ` style="color:${c}"` : ''}>${v}</span></div>`;
+    const vals = `<div class="grid ohlc">${cell('Apertura', px(x.o))}${cell('Cierre', px(x.c), x.c >= x.o ? col('--g') : col('--r'))}${cell('Máximo', px(x.h))}${cell('Mínimo', px(x.l))}`
+      + `${cell('SMA 50', px(I.bl[i]), col('--b'))}${cell('HMA 20', px(I.hm[i]), col('--y'))}${cell('SMA 200', px(I.s200[i]), col('--mu'))}${cell('ATR 14', px(I.A[i]))}`
+      + `${cell('Aroon arriba', isNaN(A.up[i]) ? '—' : n2(A.up[i], 0), col('--g'))}${cell('Aroon abajo', isNaN(A.dn[i]) ? '—' : n2(A.dn[i], 0), col('--r'))}</div>`;
+    $('#ch-info').innerHTML = `<b>${lab}</b> · ${bits.join(' · ')}${vals}${its.length ? newsList(its, 4) : ''}`;
   };
   main.subscribeClick(onClick);
   const A = aroonUD(I.h, I.l, NNFX.CFG.aroon);
   // velas sin valor como espacio en blanco: así el Aroon tiene las mismas posiciones que las velas y queda alineado
-  const al = (arr, color) => { const sr = ar.addLineSeries({ color, lineWidth: 1.5, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }); sr.setData(b.map((x, i) => isNaN(arr[i]) ? { time: T0(x.t) } : { time: T0(x.t), value: arr[i] })); return sr; };
+  const al = (arr, color) => { const sr = ar.addLineSeries({ color, lineWidth: 1.5, priceLineVisible: false, lastValueVisible: true, crosshairMarkerVisible: false, priceFormat: { type: 'price', precision: 0, minMove: 1 } }); sr.setData(b.map((x, i) => isNaN(arr[i]) ? { time: T0(x.t) } : { time: T0(x.t), value: arr[i] })); return sr; };
   const aUp = al(A.up, col('--g')); al(A.dn, col('--r'));
   ar.subscribeClick(e => onClick({ ...e, point: null }));
   // cruz sincronizada: tocar o arrastrar en una gráfica marca el mismo día en la otra
   let xs = false;
-  const cross = (src, dst, ser, val) => src.subscribeCrosshairMove(e => { if (xs) return; xs = true; try { const i = e.time !== undefined ? dayIdx[e.time] : undefined; if (i === undefined) dst.clearCrosshairPosition(); else dst.setCrosshairPosition(val(i), e.time, ser); } finally { xs = false; } });
+  const cross = (src, dst, ser, val) => src.subscribeCrosshairMove(e => { if (xs) return; xs = true; try { const i = e.time !== undefined ? dayIdx[e.time] : undefined; if (i === undefined) dst.clearCrosshairPosition(); else { dst.setCrosshairPosition(val(i), e.time, ser); showDay(i, false); } } finally { xs = false; } });
   cross(main, ar, aUp, i => isNaN(A.up[i]) ? 50 : A.up[i]); cross(ar, main, cd, i => b[i].c);
   const from = T0(b[Math.max(0, b.length - 180)].t), to = T0(b[L].t) + tfMs / 1000 * 3;
   main.timeScale().setVisibleRange({ from, to }); ar.timeScale().setVisibleRange({ from, to });
