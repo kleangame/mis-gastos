@@ -149,7 +149,7 @@ async function main() {
     // primera vez: tomar el chat de quien le mandó /start al bot y contestarle ahí con su chat_id (no se imprime en el log)
     const u = await getJSON(`https://api.telegram.org/bot${TOKEN}/getUpdates`).catch(() => null);
     const m = u && u.result.map(x => x.message).filter(Boolean).pop();
-    if (!m) { console.log('Falta TELEGRAM_CHAT_ID y nadie le mandó /start al bot todavía.'); process.exitCode = 1; return; }
+    if (!m) { console.log('Falta TELEGRAM_CHAT_ID y nadie le mandó /start al bot todavía.'); fs.writeFileSync(STATE, JSON.stringify({ ...st, lastError: { at: new Date().toISOString(), msg: u ? 'sin /start en getUpdates' : 'token inválido o getUpdates falló' } }, null, 1)); process.exitCode = 1; return; }
     chat = String(m.chat.id);
     await send(chat, `Hola 👋 Soy tu bot de señales cripto. Tu chat_id es <code>${chat}</code>: guardalo en GitHub como secreto TELEGRAM_CHAT_ID.`);
   }
@@ -161,4 +161,4 @@ async function send(chat, text) {
   const r = await fetch(`https://api.telegram.org/bot${TOKEN}/sendMessage`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ chat_id: chat, text, parse_mode: 'HTML', disable_web_page_preview: true }) });
   if (!r.ok) throw new Error('Telegram ' + r.status + ' ' + (await r.text()).replace(TOKEN, '***').slice(0, 200));
 }
-main().catch(e => { console.error(String(e.message).replace(TOKEN || '\u0000', '***')); process.exitCode = 1; });
+main().catch(e => { const m = String(e.message).split(TOKEN || '\u0000').join('***'); console.error(m); try { const st = fs.existsSync(STATE) ? JSON.parse(fs.readFileSync(STATE, 'utf8')) : {}; fs.writeFileSync(STATE, JSON.stringify({ ...st, lastError: { at: new Date().toISOString(), msg: m.slice(0, 300) } }, null, 1)); } catch {} process.exitCode = 1; });
