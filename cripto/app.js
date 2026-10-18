@@ -1,5 +1,5 @@
 'use strict';
-const VERSION = '1.6.0';
+const VERSION = '1.6.1';
 if (window.parent !== window) document.body.classList.add('embed');
 const DEF = { pairs: 'BTCUSDT,ETHUSDT,SOLUSDT,DOGEUSDT,BNBUSDT,XRPUSDT,ADAUSDT,AVAXUSDT,LINKUSDT,LTCUSDT,DOTUSDT,TRXUSDT', risk: 2, start: 100, budget: 4, maxLev: 3, paperStart: null };
 const S = Object.assign({}, DEF, JSON.parse(localStorage.getItem('nnfx.settings') || '{}'));
@@ -312,7 +312,7 @@ function renderChart(p) {
     <h2>Noticias de ${coin(p)}</h2><div class="card">${NEWS && NEWS.coins[coin(p)] ? newsList(NEWS.coins[coin(p)].items, 8) : '<div class="muted">Sin noticias para este par.</div>'}${FNG ? `<div style="margin-top:12px">${fngCard()}</div>` : ''}</div>`;
   bindTF(p);
   const opts = h => ({ height: h, layout: { background: { color: 'transparent' }, textColor: col('--mu'), fontSize: 11 }, grid: { vertLines: { visible: false }, horzLines: { color: col('--line') } },
-    rightPriceScale: { borderVisible: false }, timeScale: { borderVisible: false, timeVisible: intra, secondsVisible: false }, crosshair: { mode: 0 }, handleScale: { axisPressedMouseMove: false } });
+    rightPriceScale: { borderVisible: false, minimumWidth: 64 }, timeScale: { borderVisible: false, timeVisible: intra, secondsVisible: false }, crosshair: { mode: 0 }, handleScale: { axisPressedMouseMove: false } });
   const T0 = t => Math.floor(t / 1000) - (intra ? 10800 : 0); // intradía en hora de Uruguay
   const at = t => { if (t < b[0].t) return null; let lo = 0, hi = L; while (lo < hi) { const m = (lo + hi + 1) >> 1; if (b[m].t <= t) hi = hi, lo = m; else hi = m - 1; } return lo; };
   const T = t => T0(b[at(t) ?? 0].t), inR = t => t >= b[0].t;
@@ -348,7 +348,7 @@ function renderChart(p) {
   mk.sort((a, b) => a.time - b.time); cd.setMarkers(mk);
   if (o && inR(o.t0)) boxes.push({ raw: { ...o, t1: b[L].t }, open: true, s: o.s, e: o.e, sl: o.sl0, tp: o.tp, px: b[L].c, R: 0, half: o.half, run: o.half, atr: Math.abs(o.tp - o.e) / NNFX.CFG.tpAtr, t0: T(o.t0), t1: T0(b[L].t) });
   const prim = posBoxes(boxes, col); cd.attachPrimitive(prim);
-  main.subscribeClick(e => {
+  const onClick = e => {
     if (!e.time || dayIdx[e.time] === undefined) return;
     const pr = e.point ? cd.coordinateToPrice(e.point.y) : null;
     const hit = boxes.filter(bx => e.time >= bx.t0 && e.time <= bx.t1).sort((a, c) => (pr === null ? 0 : Math.abs(a.e - pr) - Math.abs(c.e - pr)))[0];
@@ -363,10 +363,17 @@ function renderChart(p) {
     const its = NEWS && NEWS.coins[k] ? NEWS.coins[k].items.filter(n => daily ? NNFX.day(n.ts) === d : n.ts >= x.t && n.ts < x.t + tfMs) : [];
     const lab = intra ? new Date(x.t).toLocaleString('es-UY', { timeZone: 'America/Montevideo', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : (tf === '1w' ? 'semana del ' : '') + fdUTC(x.t);
     $('#ch-info').innerHTML = `<b>${lab}</b> · ${bits.join(' · ')}${its.length ? newsList(its, 4) : ''}`;
-  });
+  };
+  main.subscribeClick(onClick);
   const A = aroonUD(I.h, I.l, NNFX.CFG.aroon);
-  const al = (arr, color) => { const sr = ar.addLineSeries({ color, lineWidth: 1.5, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }); sr.setData(b.map((x, i) => ({ time: T0(x.t), value: arr[i] })).filter(d => !isNaN(d.value))); };
-  al(A.up, col('--g')); al(A.dn, col('--r'));
+  // velas sin valor como espacio en blanco: así el Aroon tiene las mismas posiciones que las velas y queda alineado
+  const al = (arr, color) => { const sr = ar.addLineSeries({ color, lineWidth: 1.5, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }); sr.setData(b.map((x, i) => isNaN(arr[i]) ? { time: T0(x.t) } : { time: T0(x.t), value: arr[i] })); return sr; };
+  const aUp = al(A.up, col('--g')); al(A.dn, col('--r'));
+  ar.subscribeClick(e => onClick({ ...e, point: null }));
+  // cruz sincronizada: tocar o arrastrar en una gráfica marca el mismo día en la otra
+  let xs = false;
+  const cross = (src, dst, ser, val) => src.subscribeCrosshairMove(e => { if (xs) return; xs = true; try { const i = e.time !== undefined ? dayIdx[e.time] : undefined; if (i === undefined) dst.clearCrosshairPosition(); else dst.setCrosshairPosition(val(i), e.time, ser); } finally { xs = false; } });
+  cross(main, ar, aUp, i => isNaN(A.up[i]) ? 50 : A.up[i]); cross(ar, main, cd, i => b[i].c);
   const from = T0(b[Math.max(0, b.length - 180)].t), to = T0(b[L].t) + tfMs / 1000 * 3;
   main.timeScale().setVisibleRange({ from, to }); ar.timeScale().setVisibleRange({ from, to });
   let sync = false;
