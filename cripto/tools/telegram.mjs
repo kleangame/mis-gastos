@@ -131,12 +131,31 @@ async function main() {
   pp.taken.filter(t => !t.open && t.t1 === lastClosed && t.why && t.why.startsWith('stop')).forEach(t => acts.push(`<b>${coin(t.p)}: ${esc(t.why)}</b> ${side(t.s)}\nSe tocó en la vela de ayer. Si el stop estaba puesto ya está cerrada (${n2(t.R)} R).`));
   openPos.filter(t => t.tpT === lastClosed).forEach(t => acts.push(`<b>${coin(t.p)}${t.add ? ' (re-compra)' : ''}: TP1 alcanzado</b> ${side(t.s)}\nSe cerró la mitad en ${px(t.tp)}. Mové el stop de lo que queda a la entrada: ${px(t.e)}.`));
 
+  // estado de cada posición abierta (precio de la corrida ≈ apertura de la vela de hoy; indicadores al último cierre)
+  const pct = (a, b) => (a / b - 1) * 100, sg = v => (v > 0 ? '+' : '') + n2(v, v && Math.abs(v) < 10 ? 2 : 1);
+  const far = (lvl, ref) => { const d = pct(lvl, ref); return `${n2(Math.abs(d), Math.abs(d) < 10 ? 2 : 1)}% ${d >= 0 ? 'arriba' : 'abajo'}`; };
+  const arrow = v => v > 0 ? '▲ sube' : v < 0 ? '▼ baja' : '—';
+  const status = openPos.map(t => {
+    const P = R.pairs.find(q => q.p === t.p), I = P.I || (P.I = NNFX.indicators(P.b)), L = P.b.length - 2, now$ = t.price;
+    const z = sizing(t), r = Math.abs(t.e - t.sl0), qty = t.amt / r, frac = t.half ? 0.5 : 1;
+    const Rr = t.s * (now$ - t.e) / r * frac + (t.half ? 0.5 * Math.abs(t.tp - t.e) / r : 0), usd = Rr * t.amt;
+    const mv = t.s * pct(now$, t.e), days = Math.round((today - t.t0) / DAY);
+    const inFavor = t.s * (I.c[L] - I.bl[L]) > 0, aroonOk = I.s1[L] === t.s, hmaOk = I.s2[L] === t.s;
+    return `<b>${coin(t.p)}${t.add ? ' (re-compra)' : ''}</b> ${side(t.s)} · abierta ${fdUTC(t.t0)} (${days} día${days === 1 ? '' : 's'})\n` +
+      `Entrada ${px(t.e)} · ahora ${px(now$)} (${sg(mv)}% a favor)\n` +
+      `${usd >= 0 ? '✅' : '🔻'} Resultado ${sg(usd)} USDT · ${sg(usd / pp.final * 100)}% del saldo · ${sg(Rr)} R · ${sg(usd / z.margin * 100)}% sobre el margen (${z.lev}x)\n` +
+      `Stop ${px(t.sl)} (${t.half ? 'en entrada, ' : ''}${far(t.sl, now$)}) · ` + (t.half ? `TP1 cobrado en ${px(t.tp)}, queda la mitad` : `TP1 ${px(t.tp)} (${far(t.tp, now$)})`) + `\n` +
+      `Cantidad ${px(qty * frac)} ${coin(t.p)} · nocional ${n2(qty * frac * now$)} USDT · margen ${n2(z.margin * frac)}` + (z.liq ? ` · liq. ${px(z.liq)} (${far(z.liq, now$)})` : '') + `\n` +
+      `Al cierre de ayer: SMA50 ${px(I.bl[L])} (${far(I.bl[L], now$)}${inFavor ? '' : ', ⚠️ cruzada'}) · Aroon ${arrow(I.s1[L])}${aroonOk ? '' : ' ⚠️'} · HMA20 ${arrow(I.s2[L])}${hmaOk ? '' : ' (en contra)'} · ATR ${px(I.A[L])}`;
+  });
   const evToday = EV.has(NNFX.day(today));
   const usedR = openPos.reduce((a, t) => a + (t.half ? 0 : t.amt / pp.final * 100), 0);
   let msg = `<b>Cripto · vela del ${fdUTC(lastClosed)}</b>\n`;
   if (evToday) msg += `⚠️ FOMC / CPI hoy: no se abren posiciones nuevas.\n`;
   msg += '\n' + (acts.length ? acts.join('\n\n') : 'Nada para hacer hoy.') + '\n\n';
-  msg += `Saldo paper ${n2(pp.final)} USDT · ${openPos.length} abierta${openPos.length === 1 ? '' : 's'} · riesgo ${n2(usedR, 1)} de ${S.budget}%\n`;
+  if (status.length) msg += `<b>📊 Posiciones abiertas</b>\n${status.join('\n\n')}\n<i>Resultado sin restar comisiones ni funding.</i>\n\n`;
+  const openUsd = openPos.reduce((a, t) => { const r = Math.abs(t.e - t.sl0); return a + t.amt * (t.s * (t.price - t.e) / r * (t.half ? 0.5 : 1) + (t.half ? 0.5 * Math.abs(t.tp - t.e) / r : 0)); }, 0);
+  msg += `Saldo paper ${n2(pp.final)} USDT · ${openPos.length} abierta${openPos.length === 1 ? '' : 's'} · riesgo ${n2(usedR, 1)} de ${S.budget}%${openPos.length ? ` · abiertas ${sg(openUsd)} USDT (${sg(openUsd / pp.final * 100)}%)` : ''}\n`;
   msg += `<i>Datos: ${esc(srcs)}. Confirmá en la pestaña Cripto antes de operar.</i>`;
   if (R.errs.length) msg += `\nNo se pudo bajar: ${R.errs.map(e => coin(e.p)).join(', ')}.`;
 
