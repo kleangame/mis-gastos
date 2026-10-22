@@ -36,6 +36,7 @@ jobs:
           RISK: ${{ vars.CRIPTO_RISK || '2' }}
           BUDGET: ${{ vars.CRIPTO_BUDGET || '4' }}
           LEV: ${{ vars.CRIPTO_LEV || '3' }}
+          SEND_EMPTY: ${{ vars.CRIPTO_SEND_EMPTY || '1' }}
           FORCE: ${{ inputs.force && '1' || '' }}
         run: |
           git fetch origin cripto-bot:cripto-bot 2>/dev/null && git show cripto-bot:bot-state.json > /tmp/bot-state.json || true
