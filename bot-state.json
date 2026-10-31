@@ -1,0 +1,39 @@
+{
+ "lastError": {
+  "at": "2026-10-24T01:23:14.355Z",
+  "msg": "Telegram 504 {\"ok\":false,\"error_code\":504,\"description\":\"Gateway Timeout\"}"
+ },
+ "lastSent": "2026-10-31",
+ "lastRun": {
+  "day": "2026-10-31",
+  "actions": 0,
+  "sources": "Spot",
+  "diag": [
+   "ETHUSDT fapi: 451 https://fapi.binance.com/fapi/v1/klines",
+   "BTCUSDT fapi: 451 https://fapi.binance.com/fapi/v1/klines",
+   "AVAXUSDT fapi: 451 https://fapi.binance.com/fapi/v1/klines",
+   "SOLUSDT fapi: 451 https://fapi.binance.com/fapi/v1/klines",
+   "XRPUSDT fapi: 451 https://fapi.binance.com/fapi/v1/klines",
+   "ADAUSDT fapi: 451 https://fapi.binance.com/fapi/v1/klines",
+   "LINKUSDT fapi: 451 https://fapi.binance.com/fapi/v1/klines",
+   "DOGEUSDT fapi: 451 https://fapi.binance.com/fapi/v1/klines",
+   "TRXUSDT fapi: 451 https://fapi.binance.com/fapi/v1/klines",
+   "DOTUSDT fapi: 451 https://fapi.binance.com/fapi/v1/klines",
+   "BNBUSDT fapi: 451 https://fapi.binance.com/fapi/v1/klines",
+   "LTCUSDT fapi: 451 https://fapi.binance.com/fapi/v1/klines",
+   "ETHUSDT vision: hueco en velas ETHUSDT 2026-10-29",
+   "TRXUSDT vision: hueco en velas TRXUSDT 2026-10-29",
+   "AVAXUSDT vision: hueco en velas AVAXUSDT 2026-10-29",
+   "SOLUSDT vision: hueco en velas SOLUSDT 2026-10-29",
+   "BTCUSDT vision: hueco en velas BTCUSDT 2026-10-29",
+   "DOTUSDT vision: hueco en velas DOTUSDT 2026-10-29",
+   "BNBUSDT vision: hueco en velas BNBUSDT 2026-10-29",
+   "XRPUSDT vision: hueco en velas XRPUSDT 2026-10-29",
+   "ADAUSDT vision: hueco en velas ADAUSDT 2026-10-29",
+   "LINKUSDT vision: hueco en velas LINKUSDT 2026-10-29",
+   "DOGEUSDT vision: hueco en velas DOGEUSDT 2026-10-29",
+   "LTCUSDT vision: hueco en velas LTCUSDT 2026-10-29"
+  ],
+  "preview": "<b>Cripto · vela del 30/10/26</b>\n\nNada para hacer hoy.\n\nSaldo paper 100,00 USDT · 0 abiertas · riesgo 0,0 de 4%\n<i>Datos: Spot. Confirmá en la pestaña Cripto antes de operar.</i>"
+ }
+}
